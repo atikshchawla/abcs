@@ -1,5 +1,7 @@
 import type {
   AbcsConfigInput,
+  AbcsDecisionRecord,
+  AbcsProcessContribution,
   AlgorithmId,
   BehaviourHistorySample,
   ProcessDefinition,
@@ -18,21 +20,31 @@ import { TransitionDetector } from "@/lib/behaviour/transitionDetector";
 /**
  * Default ABCS configuration.
  *
- * All weights/thresholds live here — they are tunable engineering
- * choices, not universal truths. Development-scenario tuning may adjust
- * them; held-out evaluation must not.
+ * All weights/thresholds are tunable experimental parameters, not
+ * proven-optimal values. Formulas (see AbcsConfigInput docs):
+ *
+ *   C = clamp(EMA(CPU burst) / 8, 0, 1)
+ *   I = clamp(EMA(I/O blocks per 10 CPU ticks), 0, 1)
+ *   R = 0.6·(1−C) + 0.4·I
+ *
+ *   Priority = 70·R + 10·(READY wait / 4)
+ *
+ *   Quantum: R ≥ 0.65 → 2 · R ≥ 0.35 → 4 · else → 6
  */
 export const DEFAULT_ABCS_CONFIG: AbcsConfigInput = {
   emaAlpha: 0.3,
-  burstNormCap: 10,
-  ioNormCap: 20,
-  latencyBlockingBoost: 1.0,
-  quantumLevels: [2, 4, 8],
-  cpuDemandQuantumThreshold: 0.6,
-  latencyQuantumThreshold: 0.5,
-  agingWeight: 0.02,
-  agingCap: 0.5,
-  latencyPriorityWeight: 1.0,
+  cpuDemandDivisor: 8,
+  ioRateWindowCpuTicks: 10,
+  responsivenessCpuWeight: 0.6,
+  responsivenessIoWeight: 0.4,
+  priorityBehaviorWeight: 70,
+  priorityFairnessWeight: 10,
+  fairnessWaitDivisor: 4,
+  quantumHighThreshold: 0.65,
+  quantumMidThreshold: 0.35,
+  quantumHigh: 2,
+  quantumMid: 4,
+  quantumLow: 6,
   transitionThreshold: 0.25,
   transitionPersistence: 3,
   transitionCooldown: 20,
@@ -48,29 +60,16 @@ export function resolveAbcsConfig(partial?: Partial<AbcsConfigInput>): AbcsConfi
 }
 
 /**
- * ABCS — Adaptive Behaviour-Aware CPU Scheduler (first conservative
- * policy).
+ * ABCS — Adaptive Behaviour-Aware CPU Scheduler.
  *
- * Effective priority for selection:
- *   priority = latencyPriorityWeight × latencySensitivityScore
- *            + min(agingCap, agingWeight × currentReadyWait)
- * Highest priority wins; ties broken by engine FIFO insertion order.
- * Aging is the fairness safeguard: long-waiting READY processes gain
- * bounded priority so they make progress.
+ * One transparent, rule-based policy. Every dispatch records the full
+ * internal decision (scores, per-process contributions, quantum reason)
+ * so the UI can explain the actual decision without guessing.
  *
- * Adaptive quantum (past observations only):
- * - cpuDemandScore ≥ cpuDemandQuantumThreshold → longest level (batch).
- * - latencySensitivityScore ≥ latencyQuantumThreshold → shortest level.
- * - otherwise → middle level.
- * - On a detected transition, quantum resets to the middle level
- *   (transition-aware response).
- *
- * Stability controls:
- * - After any quantum-changing adjustment, further quantum changes are
- *   frozen for `stabilitySettlePeriod` ticks.
- * - Transition detections are suppressed during the cooldown window.
- * Both transition detection and stability controls are independently
- * switchable for ablation studies.
+ * Selection: highest Priority = 70·R + 10·(wait/4); ties by FIFO order.
+ * Adaptive quantum from R bands. Transition detection resets quantum to
+ * the middle level; stability controls freeze further quantum changes
+ * briefly after an adjustment.
  */
 export class AbcsScheduler implements Scheduler {
   readonly algorithm: AlgorithmId = "ABCS";
@@ -79,9 +78,11 @@ export class AbcsScheduler implements Scheduler {
   private readonly detector: TransitionDetector;
   private readonly history: BehaviourHistorySample[] = [];
   private readonly pendingEvents: SimulationEvent[] = [];
+  private readonly decisionRecords: AbcsDecisionRecord[] = [];
+  private currentQuantumLevel: 0 | 1 | 2 = 1; // middle by default
   private quantumLockedUntil = -Infinity;
-  private currentQuantumLevel = 1; // middle by default
   private lastTransitionTime = -Infinity;
+  private lastPolicyNotes: string[] = [];
 
   constructor(cfg?: Partial<AbcsConfigInput>) {
     this.cfg = resolveAbcsConfig(cfg);
@@ -138,6 +139,9 @@ export class AbcsScheduler implements Scheduler {
             deviation: detection.deviation,
           },
         });
+        this.lastPolicyNotes.push(
+          `t=${time} transition detected (${detection.metric}): recent=${detection.recent.toFixed(2)} vs baseline=${detection.baseline.toFixed(2)}`,
+        );
         // Transition-aware response: reset to the middle quantum level.
         const settle = this.cfg.enableStabilityControls
           ? this.cfg.stabilitySettlePeriod
@@ -149,8 +153,11 @@ export class AbcsScheduler implements Scheduler {
               time,
               type: "POLICY_ADJUSTMENT",
               algorithm: "ABCS",
-              reason: `transition detected: adaptive quantum reset to middle level (${this.cfg.quantumLevels[1] ?? this.cfg.quantumLevels[0]} ticks)`,
+              reason: `transition detected: adaptive quantum reset to middle level (${this.cfg.quantumMid} ticks)`,
             });
+            this.lastPolicyNotes.push(
+              `t=${time} policy adjustment: quantum reset to ${this.cfg.quantumMid} ticks`,
+            );
           }
           if (settle > 0) {
             this.quantumLockedUntil = time + settle;
@@ -158,18 +165,10 @@ export class AbcsScheduler implements Scheduler {
         }
       }
     }
-    // When transition detection is disabled (ablation), observations are
-    // still recorded above for scores, but the detector is never fed.
   }
 
   onIOComplete(time: number, processId: string, ioWaitDuration: number): void {
     this.model(processId).recordIOWait(ioWaitDuration);
-    if (this.cfg.enableTransitionDetection) {
-      // IO completions do not carry a burst observation; feed only the
-      // block indicator through burst-null path? Detector expects burst
-      // or block observations; skip here (burst path already covers
-      // block-after-burst frequency).
-    }
     this.pushHistory(time, processId, `IO completed (waited ${ioWaitDuration})`);
   }
 
@@ -187,26 +186,60 @@ export class AbcsScheduler implements Scheduler {
       return { processId: null, quantum: 0, reason: "ready queue empty" };
     }
 
-    let best = ready[0];
-    let bestPriority = this.priorityOf(time, best);
-    for (let i = 1; i < ready.length; i++) {
-      const priority = this.priorityOf(time, ready[i]);
-      if (priority > bestPriority) {
-        best = ready[i];
-        bestPriority = priority;
+    // Compute priority for every READY process and record the breakdown.
+    const contributions: AbcsProcessContribution[] = ready.map((view) => {
+      const scores = this.model(view.id).scores;
+      const readyWait =
+        view.currentReadyWait > 0 ? view.currentReadyWait : view.totalReadyWait;
+      const behaviorContribution = this.cfg.priorityBehaviorWeight * scores.latencySensitivityScore;
+      const fairnessContribution =
+        (this.cfg.priorityFairnessWeight * readyWait) / this.cfg.fairnessWaitDivisor;
+      return {
+        processId: view.id,
+        cpuDemandScore: scores.cpuDemandScore,
+        ioActivityScore: scores.ioActivityScore,
+        responsivenessScore: scores.latencySensitivityScore,
+        readyWait,
+        behaviorContribution,
+        fairnessContribution,
+        totalPriority: behaviorContribution + fairnessContribution,
+      };
+    });
+
+    // Highest priority wins; ties broken by FIFO order (stable sort).
+    let bestIdx = 0;
+    for (let i = 1; i < contributions.length; i++) {
+      if (contributions[i].totalPriority > contributions[bestIdx].totalPriority) {
+        bestIdx = i;
       }
     }
+    const best = contributions[bestIdx];
+    const sorted = [...contributions].sort((a, b) => b.totalPriority - a.totalPriority);
 
-    const quantum = this.quantumFor(best.id, time);
-    const scores = this.model(best.id).scores;
-    return {
-      processId: best.id,
+    const { quantum, quantumReason } = this.quantumFor(best.processId, time);
+    const scores = this.model(best.processId).scores;
+
+    const reason =
+      `selected: highest priority ${best.totalPriority.toFixed(1)} ` +
+      `(behaviour ${best.behaviorContribution.toFixed(1)} = 70×R(${scores.latencySensitivityScore.toFixed(2)}), ` +
+      `fairness ${best.fairnessContribution.toFixed(1)} = 10×wait(${best.readyWait})/4) ` +
+      `among ${ready.length} READY process(es); quantum ${quantum} (${quantumReason})`;
+
+    const transitionDetected = time - this.lastTransitionTime < 5;
+    const record: AbcsDecisionRecord = {
+      time,
+      selectedProcessId: best.processId,
       quantum,
-      reason:
-        `selected: highest effective priority ${bestPriority.toFixed(3)} ` +
-        `(latency=${scores.latencySensitivityScore.toFixed(2)}, aging=${this.agingOf(time, best).toFixed(3)}) ` +
-        `among ${ready.length} READY process(es); quantum ${quantum}`,
+      quantumReason,
+      reason,
+      contributions: sorted,
+      transitionDetected,
+      policyNotes: [...this.lastPolicyNotes],
     };
+    this.decisionRecords.push(record);
+    this.lastPolicyNotes = [];
+
+    return { processId: best.processId, quantum, reason };
   }
 
   shouldPreempt(
@@ -217,34 +250,35 @@ export class AbcsScheduler implements Scheduler {
     if (ready.length === 0) {
       return { preempt: false, reason: "no READY processes" };
     }
-    const currentPriority = this.priorityOf(time, {
-      id: currentProcessId,
-      currentReadyWait: 0,
-      totalReadyWait: 0,
-      cpuService: 0,
-      completedBursts: 0,
-    });
-    let best = ready[0];
-    let bestPriority = this.priorityOf(time, best);
-    for (let i = 1; i < ready.length; i++) {
-      const p = this.priorityOf(time, ready[i]);
+    const currentScores = this.model(currentProcessId).scores;
+    const currentPriority =
+      this.cfg.priorityBehaviorWeight * currentScores.latencySensitivityScore;
+    let bestPriority = -Infinity;
+    let bestId = "";
+    for (const view of ready) {
+      const scores = this.model(view.id).scores;
+      const readyWait =
+        view.currentReadyWait > 0 ? view.currentReadyWait : view.totalReadyWait;
+      const p =
+        this.cfg.priorityBehaviorWeight * scores.latencySensitivityScore +
+        (this.cfg.priorityFairnessWeight * readyWait) / this.cfg.fairnessWaitDivisor;
       if (p > bestPriority) {
-        best = ready[i];
         bestPriority = p;
+        bestId = view.id;
       }
     }
-    // Only preempt when the newcomer is clearly better (strict margin
-    // avoids ping-pong preemption from tiny aging differences).
-    const margin = this.cfg.agingCap * 0.5;
+    // Preempt only when the newcomer is clearly better (margin avoids
+    // ping-pong from tiny fairness differences).
+    const margin = this.cfg.priorityFairnessWeight * (this.cfg.fairnessWaitDivisor / 2);
     if (bestPriority > currentPriority + margin) {
       return {
         preempt: true,
-        reason: `preempt: ${best.id} effective priority ${bestPriority.toFixed(3)} exceeds current ${currentPriority.toFixed(3)} + margin ${margin.toFixed(3)}`,
+        reason: `preempt: ${bestId} priority ${bestPriority.toFixed(1)} exceeds current ${currentPriority.toFixed(1)} + margin ${margin.toFixed(1)}`,
       };
     }
     return {
       preempt: false,
-      reason: `no READY process exceeds current priority ${currentPriority.toFixed(3)} + margin`,
+      reason: `no READY process exceeds current priority ${currentPriority.toFixed(1)} + margin ${margin.toFixed(1)}`,
     };
   }
 
@@ -253,13 +287,16 @@ export class AbcsScheduler implements Scheduler {
     if (!model) return undefined;
     return {
       scores: model.scores,
-      effectivePriority: undefined,
-      adaptiveQuantum: this.cfg.quantumLevels[this.currentQuantumLevel],
+      adaptiveQuantum: this.currentQuantum(),
     };
   }
 
   getBehaviourHistory(): BehaviourHistorySample[] {
     return this.history;
+  }
+
+  getDecisionRecords(): AbcsDecisionRecord[] {
+    return this.decisionRecords;
   }
 
   /** Drain engine-agnostic pending events (transition/policy logs). */
@@ -282,47 +319,53 @@ export class AbcsScheduler implements Scheduler {
     return m;
   }
 
-  private agingOf(time: number, view: ReadyProcessView): number {
-    const wait =
-      view.currentReadyWait > 0 ? view.currentReadyWait : view.totalReadyWait;
-    return Math.min(this.cfg.agingCap, this.cfg.agingWeight * wait);
+  private currentQuantum(): number {
+    if (this.currentQuantumLevel === 0) return this.cfg.quantumHigh;
+    if (this.currentQuantumLevel === 1) return this.cfg.quantumMid;
+    return this.cfg.quantumLow;
   }
 
-  private priorityOf(time: number, view: ReadyProcessView): number {
-    const model = this.models.get(view.id);
-    const latency = model?.scores.latencySensitivityScore ?? 0;
-    return this.cfg.latencyPriorityWeight * latency + this.agingOf(time, view);
-  }
-
-  private quantumFor(processId: string, time: number): number {
-    const levels = this.cfg.quantumLevels;
-    if (levels.length === 0) return 1;
+  private quantumFor(processId: string, time: number): { quantum: number; quantumReason: string } {
     const locked = time < this.quantumLockedUntil;
-    if (!locked) {
-      const scores = this.model(processId).scores;
-      let level: number;
-      if (scores.latencySensitivityScore >= this.cfg.latencyQuantumThreshold) {
-        level = 0;
-      } else if (scores.cpuDemandScore >= this.cfg.cpuDemandQuantumThreshold) {
-        level = levels.length - 1;
-      } else {
-        level = Math.min(1, levels.length - 1);
-      }
-      if (level !== this.currentQuantumLevel) {
-        this.currentQuantumLevel = level;
-        if (this.cfg.enableStabilityControls) {
-          this.quantumLockedUntil = time + this.cfg.stabilitySettlePeriod;
-        }
-        this.pendingEvents.push({
-          time,
-          type: "POLICY_ADJUSTMENT",
-          algorithm: "ABCS",
-          reason: `adaptive quantum → level ${level} (${levels[level]} ticks) based on observed behaviour scores`,
-          metadata: { level, quantum: levels[level] },
-        });
-      }
+    if (locked) {
+      return {
+        quantum: this.currentQuantum(),
+        quantumReason: `stability lock (level ${this.currentQuantumLevel}, ${this.currentQuantum()} ticks) until t=${this.quantumLockedUntil}`,
+      };
     }
-    return levels[this.currentQuantumLevel] ?? levels[0];
+
+    const scores = this.model(processId).scores;
+    const R = scores.latencySensitivityScore;
+    let level: 0 | 1 | 2;
+    let band: string;
+    if (R >= this.cfg.quantumHighThreshold) {
+      level = 0;
+      band = `R=${R.toFixed(2)} ≥ ${this.cfg.quantumHighThreshold} → high-responsiveness band`;
+    } else if (R >= this.cfg.quantumMidThreshold) {
+      level = 1;
+      band = `R=${R.toFixed(2)} in [${this.cfg.quantumMidThreshold}, ${this.cfg.quantumHighThreshold}) → middle band`;
+    } else {
+      level = 2;
+      band = `R=${R.toFixed(2)} < ${this.cfg.quantumMidThreshold} → batch band`;
+    }
+
+    if (level !== this.currentQuantumLevel) {
+      this.currentQuantumLevel = level;
+      if (this.cfg.enableStabilityControls) {
+        this.quantumLockedUntil = time + this.cfg.stabilitySettlePeriod;
+      }
+      this.pendingEvents.push({
+        time,
+        type: "POLICY_ADJUSTMENT",
+        algorithm: "ABCS",
+        reason: `adaptive quantum → level ${level} (${this.currentQuantum()} ticks): ${band}`,
+        metadata: { level, quantum: this.currentQuantum() },
+      });
+      this.lastPolicyNotes.push(
+        `t=${time} quantum adjusted to ${this.currentQuantum()} ticks: ${band}`,
+      );
+    }
+    return { quantum: this.currentQuantum(), quantumReason: band };
   }
 
   private pushHistory(

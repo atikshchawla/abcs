@@ -14,7 +14,8 @@ export interface TransitionDetection {
  *
  * Maintains a fast EMA ("recent") and a slow EMA ("baseline") of
  * normalized aggregate signals:
- * - CPU demand: normalized CPU burst length at each burst completion.
+ * - CPU demand: CPU burst length normalized by cpuDemandDivisor (so a
+ *   burst of length D scores 1.0).
  * - IO activity: 0/1 indicator of entering IO after a burst.
  *
  * A transition is declared when |recent − baseline| exceeds
@@ -51,7 +52,7 @@ export class TransitionDetector {
     let detection: TransitionDetection | null = null;
 
     if (burstLength !== null) {
-      const x = normalizeByCap(burstLength, this.cfg.burstNormCap);
+      const x = normalizeByCap(burstLength, this.cfg.cpuDemandDivisor);
       const recent = this.recentBurst.update(x);
       const baseline = this.baselineBurst.update(x);
       const dev = Math.abs(recent - baseline);
@@ -107,3 +108,4 @@ export class TransitionDetector {
     return detection;
   }
 }
+

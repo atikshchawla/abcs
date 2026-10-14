@@ -6,6 +6,8 @@ import {
   computeMetricDeltas,
   pctChange,
   bestAlgorithmForMetric,
+  runConfigComparison,
+  diffAbcsConfig,
 } from "@/lib/demo/compare";
 import { getDemoWorkload, listDemoWorkloads } from "@/lib/workloads/demo";
 
@@ -137,5 +139,67 @@ describe("comparison sentence & deltas", () => {
   it("bestAlgorithmForMetric returns an algorithm or null (no hard-coded winner)", () => {
     const best = bestAlgorithmForMetric(results, "avgResponseTime");
     expect(best === null || ["RR", "MLFQ", "ABCS"].includes(best)).toBe(true);
+  });
+});
+
+describe("runDemoComparison with config override", () => {
+  const workload = getDemoWorkload("changing");
+  if (!workload) throw new Error("missing changing workload");
+
+  it("accepts a partial ABCS config and still completes all three algorithms", () => {
+    const r = runDemoComparison(workload, { emaAlpha: 0.5, quantumMid: 6 });
+    expect(r.RR.completed).toBe(true);
+    expect(r.MLFQ.completed).toBe(true);
+    expect(r.ABCS.completed).toBe(true);
+    expect(r.ABCS.decisionRecords.length).toBeGreaterThan(0);
+  });
+
+  it("custom config does not affect RR/MLFQ baselines", () => {
+    const def = runDemoComparison(getDemoWorkload("changing")!);
+    const custom = runDemoComparison(getDemoWorkload("changing")!, { emaAlpha: 0.9 });
+    expect(custom.RR.metrics.avgResponseTime).toBe(def.RR.metrics.avgResponseTime);
+    expect(custom.MLFQ.metrics.avgWaitingTime).toBe(def.MLFQ.metrics.avgWaitingTime);
+    // ABCS may differ (different EMA smoothing) — determinism for same config:
+    const again = runDemoComparison(getDemoWorkload("changing")!, { emaAlpha: 0.9 });
+    expect(again.ABCS.metrics.avgResponseTime).toBe(custom.ABCS.metrics.avgResponseTime);
+  });
+});
+
+describe("runConfigComparison", () => {
+  const workload = getDemoWorkload("changing");
+  if (!workload) throw new Error("missing changing workload");
+
+  it("runs default and custom ABCS and reports changed params", () => {
+    const cmp = runConfigComparison(workload, { emaAlpha: 0.5, priorityBehaviorWeight: 50 });
+    expect(cmp.defaultResults.ABCS.completed).toBe(true);
+    expect(cmp.customResults.ABCS.completed).toBe(true);
+    expect(cmp.changedParams.length).toBe(2);
+    expect(cmp.changedParams.map((c) => c.key).sort()).toEqual([
+      "emaAlpha",
+      "priorityBehaviorWeight",
+    ]);
+    // RR/MLFQ baselines identical between default and custom.
+    expect(cmp.customResults.RR.metrics.avgResponseTime).toBe(
+      cmp.defaultResults.RR.metrics.avgResponseTime,
+    );
+    expect(cmp.customResults.MLFQ.metrics.avgTurnaroundTime).toBe(
+      cmp.defaultResults.MLFQ.metrics.avgTurnaroundTime,
+    );
+  });
+});
+
+describe("diffAbcsConfig", () => {
+  it("returns empty for empty or identical-to-default input", () => {
+    expect(diffAbcsConfig({})).toEqual([]);
+    expect(diffAbcsConfig({ emaAlpha: 0.3 })).toEqual([]);
+  });
+
+  it("reports only differing numeric keys", () => {
+    const d = diffAbcsConfig({ emaAlpha: 0.5, quantumMid: 6 });
+    expect(d).toHaveLength(2);
+    expect(d.find((x) => x.key === "emaAlpha")?.from).toBe(0.3);
+    expect(d.find((x) => x.key === "emaAlpha")?.to).toBe(0.5);
+    expect(d.find((x) => x.key === "quantumMid")?.from).toBe(4);
+    expect(d.find((x) => x.key === "quantumMid")?.to).toBe(6);
   });
 });

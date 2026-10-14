@@ -1,4 +1,5 @@
 import type {
+  AbcsDecisionRecord,
   AlgorithmId,
   BehaviourHistorySample,
   BehaviourScores,
@@ -97,4 +98,7 @@ export interface Scheduler {
 
   /** Optional behaviour/observation history (ABCS and ablations). */
   getBehaviourHistory?(): BehaviourHistorySample[];
+
+  /** Optional full decision records (ABCS only; one per dispatch). */
+  getDecisionRecords?(): AbcsDecisionRecord[];
 }

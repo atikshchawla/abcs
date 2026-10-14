@@ -13,28 +13,29 @@ function wl(processes: Workload["processes"], name = "abcs-test"): Workload {
 describe("ProcessObservationModel", () => {
   it("scores start at 0 before any observation", () => {
     const m = new ProcessObservationModel(DEFAULT_ABCS_CONFIG);
+    // C=0, I=0 with no data → R = 0.6*(1-0) + 0.4*0 = 0.6
     expect(m.scores).toEqual({
       cpuDemandScore: 0,
       ioActivityScore: 0,
-      latencySensitivityScore: 0,
+      latencySensitivityScore: 0.6,
     });
   });
 
   it("long CPU bursts raise cpuDemand and lower latencySensitivity", () => {
     const m = new ProcessObservationModel(DEFAULT_ABCS_CONFIG);
-    m.recordBurst(10, false); // norm = 1
+    m.recordBurst(10, false); // C = 10/8 → clamped to 1
     expect(m.scores.cpuDemandScore).toBeCloseTo(1);
     expect(m.scores.ioActivityScore).toBeCloseTo(0);
-    // latency = (1-1)*1 = 0
+    // R = 0.6*(1-1) + 0.4*0 = 0
     expect(m.scores.latencySensitivityScore).toBeCloseTo(0);
   });
 
   it("short bursts ending in IO raise latencySensitivity and ioActivity", () => {
     const m = new ProcessObservationModel(DEFAULT_ABCS_CONFIG);
-    m.recordBurst(2, true); // norm = 0.2, latency = (1-0.2)*boost(1.0) = 0.8
-    expect(m.scores.cpuDemandScore).toBeCloseTo(0.2);
+    m.recordBurst(2, true); // C = 2/8 = 0.25; I = 10/2 = 5 → clamped to 1; R = 0.6*0.75 + 0.4*1 = 0.85
+    expect(m.scores.cpuDemandScore).toBeCloseTo(0.25);
     expect(m.scores.ioActivityScore).toBeCloseTo(1);
-    expect(m.scores.latencySensitivityScore).toBeCloseTo(0.8);
+    expect(m.scores.latencySensitivityScore).toBeCloseTo(0.85);
   });
 
   it("scores stay within [0,1] with mixed observations", () => {
@@ -73,7 +74,7 @@ describe("TransitionDetector", () => {
     transitionPersistence: 2,
     transitionCooldown: 10,
     transitionBaselineAlpha: 0.1,
-    burstNormCap: 10,
+    cpuDemandDivisor: 10,
   });
 
   it("does not fire on a stable signal", () => {
@@ -141,7 +142,11 @@ describe("AbcsScheduler", () => {
       { id: "A", currentReadyWait: 0, totalReadyWait: 0, cpuService: 0, completedBursts: 0 },
     ]);
     expect(sel.processId).toBe("A");
-    const levels = DEFAULT_ABCS_CONFIG.quantumLevels;
+    const levels = [
+      DEFAULT_ABCS_CONFIG.quantumHigh,
+      DEFAULT_ABCS_CONFIG.quantumMid,
+      DEFAULT_ABCS_CONFIG.quantumLow,
+    ];
     expect(levels).toContain(sel.quantum);
   });
 
@@ -155,10 +160,15 @@ describe("AbcsScheduler", () => {
     const sel = s.selectProcess(100, [
       { id: "A", currentReadyWait: 0, totalReadyWait: 0, cpuService: 100, completedBursts: 10 },
     ]);
-    expect(DEFAULT_ABCS_CONFIG.quantumLevels).toContain(sel.quantum);
+    const levels = [
+      DEFAULT_ABCS_CONFIG.quantumHigh,
+      DEFAULT_ABCS_CONFIG.quantumMid,
+      DEFAULT_ABCS_CONFIG.quantumLow,
+    ];
+    expect(levels).toContain(sel.quantum);
   });
 
-  it("aging raises effective priority for long-waiting processes", () => {
+  it("fairness term raises priority for long-waiting processes", () => {
     const s = new AbcsScheduler();
     s.init([
       { id: "A", arrivalTime: 0 },
@@ -172,10 +182,37 @@ describe("AbcsScheduler", () => {
       { id: "A", currentReadyWait: 0, totalReadyWait: 0, cpuService: 1, completedBursts: 1 },
       { id: "B", currentReadyWait: 500, totalReadyWait: 500, cpuService: 9, completedBursts: 1 },
     ]);
-    // Aging cap = 0.5; latency weight 1.0. B priority ≈ 0 + 0.5; A ≈ latency*1.
-    // With A's latency ~ (1-0.1)*1 ≈ 0.9 for burst=1 → A still wins, but the
-    // point is B's priority includes the aging term — verify via reason text.
-    expect(sel.reason).toContain("aging");
+    // Priority = 70·R + 10·(wait/4). B's huge wait dominates → B wins.
+    // Reason text includes fairness contribution breakdown.
+    expect(sel.processId).toBe("B");
+    expect(sel.reason).toContain("fairness");
+    expect(sel.reason).toContain("behaviour");
+  });
+
+  it("records full decision records on each dispatch", () => {
+    const s = new AbcsScheduler();
+    s.init([{ id: "A", arrivalTime: 0 }, { id: "B", arrivalTime: 0 }]);
+    s.onBurstComplete(1, "A", 1, true);
+    s.onBurstComplete(2, "B", 9, false);
+    s.selectProcess(10, [
+      { id: "A", currentReadyWait: 2, totalReadyWait: 2, cpuService: 1, completedBursts: 1 },
+      { id: "B", currentReadyWait: 3, totalReadyWait: 3, cpuService: 9, completedBursts: 1 },
+    ]);
+    const records = s.getDecisionRecords();
+    expect(records).toHaveLength(1);
+    const rec = records[0];
+    expect(rec.time).toBe(10);
+    expect(rec.contributions).toHaveLength(2);
+    // Contributions sorted by totalPriority desc.
+    expect(rec.contributions[0].totalPriority).toBeGreaterThanOrEqual(
+      rec.contributions[1].totalPriority,
+    );
+    // Each contribution has the full breakdown.
+    for (const c of rec.contributions) {
+      expect(c.behaviorContribution).toBeCloseTo(70 * c.responsivenessScore);
+      expect(c.fairnessContribution).toBeCloseTo(10 * c.readyWait / 4);
+      expect(c.totalPriority).toBeCloseTo(c.behaviorContribution + c.fairnessContribution);
+    }
   });
 
   it("records behaviour history entries", () => {
@@ -229,6 +266,31 @@ describe("ABCS engine integration", () => {
     expect(sample).toBeDefined();
     expect(sample!.scores.cpuDemandScore).toBeGreaterThanOrEqual(0);
     expect(sample!.scores.cpuDemandScore).toBeLessThanOrEqual(1);
+  });
+
+  it("records decision records for every ABCS dispatch", () => {
+    const workload = wl([
+      { id: "P1", arrivalTime: 0, phases: [{ type: "CPU", duration: 4 }, { type: "IO", duration: 2 }, { type: "CPU", duration: 4 }] },
+      { id: "P2", arrivalTime: 0, phases: [{ type: "CPU", duration: 6 }] },
+    ]);
+    const result = runSimulation(workload, { algorithm: "ABCS" });
+    expect(result.decisionRecords.length).toBeGreaterThan(0);
+    const rec = result.decisionRecords[0];
+    expect(rec.time).toBeGreaterThanOrEqual(0);
+    expect(rec.contributions.length).toBeGreaterThanOrEqual(1);
+    expect(typeof rec.quantumReason).toBe("string");
+    // Every record's contributions sum consistently.
+    for (const c of rec.contributions) {
+      expect(c.totalPriority).toBeCloseTo(c.behaviorContribution + c.fairnessContribution);
+    }
+  });
+
+  it("RR and MLFQ have empty decision records", () => {
+    const workload = wl([
+      { id: "P1", arrivalTime: 0, phases: [{ type: "CPU", duration: 4 }] },
+    ]);
+    expect(runSimulation(workload, { algorithm: "RR", rrQuantum: 2 }).decisionRecords).toEqual([]);
+    expect(runSimulation(workload, { algorithm: "MLFQ" }).decisionRecords).toEqual([]);
   });
 
   it("emits only observation-derived transition events (no hidden labels)", () => {

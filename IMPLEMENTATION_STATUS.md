@@ -161,3 +161,110 @@ required flows.
 - Gates: `npm run typecheck` clean; `npm test` 112 passing (10 files);
   `npm run lint` clean; `npm run build` succeeds (/, /compare,
   /methodology, /simulation, /api/simulate, /api/compare).
+
+### 2026-10-15 — Single-page refactor (professor demo)
+
+- Consolidated to one focused experiment page at `/`. Old
+  `/simulation`, `/compare`, `/methodology` routes now redirect.
+- Four curated demo workloads: Mixed, CPU-Heavy, I/O-Heavy, Changing
+  (CPU→I/O transition; primary adaptation demo).
+- `runDemoComparison`: runs RR, MLFQ, ABCS on the same immutable
+  workload (deep-cloned per run); shared duration + process-id union.
+- `extractDecisionPoints`: one point per unique DISPATCH time across
+  all three algorithms; per-algorithm kind (dispatch/continuing/idle),
+  plain-language reason, ABCS nearby policy events + outcome interval.
+- `buildComparisonSentence`: honest %-change sentence from actual
+  metrics (response/waiting/turnaround vs RR; trade-off note; MLFQ
+  response note; completed-count note when incomplete). Never
+  hard-codes a win.
+- UI: compact header; workload select + Run Comparison; three result
+  cards (avg response/waiting/turnaround, completed; subtle best-of ★);
+  comparison sentence; three aligned SVG Gantt lanes (same scale,
+  shared process colours, idle hatch, quantum-expiry dashed markers,
+  ABCS transition/policy purple markers, click-to-select interval);
+  decision panel (Prev/Next/Play + “First ABCS transition” jump) with
+  RR/MLFQ/ABCS explanations; expandable behaviour scores, event log,
+  per-process tables, methodology brief.
+- Removed old multi-page components (CompareWorkbench,
+  ComparisonCharts, MetricsTable, SimulationWorkbench, WorkloadEditor,
+  SimulationControls, CpuGanttChart, MetricsSummary). Kept
+  BehaviourPanel, ProcessTable, EventLog for progressive disclosure.
+- API routes and simulation library untouched (modularity preserved).
+- Tests: added `demo.test.ts` + `demoWorkloads.test.ts` (21 tests).
+  Gates: typecheck clean; 133 tests passing (12 files); lint clean;
+  production build succeeds.
+
+### 2026-10-15 — New ABCS formulas + decision trace + UI
+
+- Rewrote ABCS core per updated spec:
+  - Scores: `C = clamp(EMA(CPU burst)/8, 0, 1)`, `I = clamp(EMA(I/O
+    blocks per 10 CPU ticks), 0, 1)`, `R = 0.6(1−C) + 0.4I` (α = 0.3).
+  - Priority = `70·R + 10·(READY wait / 4)`; highest wins, FIFO tie-break.
+  - Quantum bands: R ≥ 0.65 → 2 · R ≥ 0.35 → 4 · else → 6 (middle on
+    transition reset).
+- `AbcsConfigInput` updated: removed old cap/boost/aging fields; added
+  cpuDemandDivisor, ioRateWindowCpuTicks, responsiveness weights,
+  priority weights, fairness divisor, quantum band thresholds/levels.
+- `ProcessObservationModel` rewritten for new C/I/R formulas; burst
+  EMA + per-burst I/O-blocks-per-10-CPU-ticks EMA.
+- Full decision recording: `AbcsDecisionRecord` + per-process
+  `AbcsProcessContribution` (C/I/R, readyWait, behaviour 70·R, fairness
+  10·wait/4, total). Recorded at every `selectProcess` from actual
+  internal values. Exposed via `getDecisionRecords()` on the scheduler
+  and attached to `SimulationResult.decisionRecords` (empty for RR/MLFQ).
+- `DecisionPanel` redesigned: six-step flow (Observe → Estimate →
+  Calculate → Select → Execute → Update) with priority bar comparison
+  (behaviour blue vs fairness green, selected highlighted), formula
+  breakdown, quantum band label, transition/policy notes.
+- `compare.ts` `buildAbcsDetail` now pulls the recorded decision by
+  time (never reconstructed from guesses).
+- Tests updated for new formulas; added decision-record coverage.
+  Gates: typecheck clean; 136 tests passing (12 files); lint clean;
+  production build succeeds.
+- README updated with new ABCS rules, single-page usage, and
+  experimental-parameter limitations.
+
+### 2026-10-15 — Interactive React Flow UI + config panel
+
+- Installed `@xyflow/react` (React Flow) for the interactive decision
+  pipeline visualization.
+- **DecisionFlow component**: 6 custom nodes (Observe → Estimate
+  Behaviour → Calculate Priority → Select Process → Execute → Update)
+  connected by animated edges. Nodes render real data from
+  `AbcsDecisionRecord` (C/I/R mini-bars, priority ranking bars with
+  winner highlight, quantum band reason, policy notes). Clickable
+  focus stage; horizontal on ≥900px, vertical below; SSR-safe layout.
+- **AbcsTimeline**: full-width single-lane ABCS Gantt (44px lane,
+  idle hatch, quantum-expiry dashes, transition/policy markers,
+  playhead, active-interval label).
+- **BaselinePanel**: compact RR and MLFQ panels in a two-column grid
+  below ABCS — each with mini timeline, FIFO/queue explanation, and a
+  short comparison sentence vs ABCS at the same simulated time.
+- **BehaviourChart**: Recharts step-line time-series of C/I/R scores
+  with selected-decision ReferenceLine and transition markers.
+- **ConfigPanel**: collapsible (closed by default) editor for 17
+  numeric ABCS parameters. Labels/units/hints from the typed config;
+  validation (R-weight sum, quantum thresholds); Reset / Run defaults /
+  Run with config / Cancel. Modified-vs-default diff badges. Last
+  custom-run diff shown for default-vs-custom comparison. `configUsed`
+  badge on the header when a custom run is active.
+- **runDemoComparison** extended with optional `abcsConfig` override;
+  RR/MLFQ always use unchanged baselines. Added
+  `runConfigComparison` (default vs custom on same workload, shared
+  baselines) and `diffAbcsConfig` helpers.
+- **DemoApp layout reworked** for 1366×768: compact header with
+  workload select + Run + playback toolbar (Prev/Play/Next/Reset/
+  Jump-to-transition) + decision counter; decision summary bar
+  (t, selected process, priority, quantum, transition status, policy
+  changes); ABCS primary section (summary → AbcsTimeline →
+  DecisionFlow → BehaviourChart); RR/MLFQ two-column below; result
+  cards + comparison sentence; expandable ABCS event log.
+- Removed unused `AlignedGantts.tsx` and `DecisionPanel.tsx` (replaced
+  by AbcsTimeline / DecisionFlow / BaselinePanel).
+- Shared `PROCESS_COLORS` / `colorFor` extracted to
+  `src/lib/demo/colors.ts`.
+- Layout widened to `max-w-[1440px]` for the full-width ABCS section.
+- Tests: +5 (config override determinism, baselines unaffected by ABCS
+  config, runConfigComparison changed-params report, diffAbcsConfig).
+  Gates: typecheck clean; 141 tests passing (12 files); lint clean;
+  production build succeeds.

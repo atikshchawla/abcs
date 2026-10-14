@@ -1,4 +1,6 @@
 import type {
+  AbcsConfigInput,
+  AbcsDecisionRecord,
   AlgorithmId,
   BehaviourHistorySample,
   GanttInterval,
@@ -8,6 +10,7 @@ import type {
   Workload,
 } from "@/lib/model/types";
 import { runSimulation } from "@/lib/simulation/engine";
+import { DEFAULT_ABCS_CONFIG } from "@/lib/schedulers/abcs";
 
 /**
  * Single-page demo comparison: run RR, MLFQ, and ABCS on the same
@@ -25,11 +28,17 @@ export interface DemoResults {
   readonly processIds: readonly string[];
 }
 
-export function runDemoComparison(workload: Workload): DemoResults {
+export function runDemoComparison(
+  workload: Workload,
+  abcsConfig?: Partial<AbcsConfigInput>,
+): DemoResults {
   // Deep-clone per run so no algorithm can observe another's mutation.
   const rr = runSimulation(structuredClone(workload), { algorithm: "RR" });
   const mlfq = runSimulation(structuredClone(workload), { algorithm: "MLFQ" });
-  const abcs = runSimulation(structuredClone(workload), { algorithm: "ABCS" });
+  const abcs = runSimulation(structuredClone(workload), {
+    algorithm: "ABCS",
+    ...(abcsConfig ? { abcs: abcsConfig } : {}),
+  });
 
   const duration = Math.max(
     endOf(rr.gantt),
@@ -50,6 +59,82 @@ export function runDemoComparison(workload: Workload): DemoResults {
     duration,
     processIds: [...ids].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
   };
+}
+
+/**
+ * Default vs custom ABCS configuration comparison on the same immutable
+ * workload. RR/MLFQ are run once (baselines unchanged by config).
+ */
+export interface ConfigComparison {
+  readonly defaultResults: DemoResults;
+  readonly customResults: DemoResults;
+  readonly changedParams: readonly { key: keyof AbcsConfigInput; label: string; from: number; to: number }[];
+}
+
+const CONFIG_PARAM_LABELS: Record<keyof AbcsConfigInput, string> = {
+  emaAlpha: "EMA alpha",
+  cpuDemandDivisor: "CPU burst normalization (ticks)",
+  ioRateWindowCpuTicks: "I/O-rate window (CPU ticks)",
+  responsivenessCpuWeight: "CPU-demand weight in R",
+  responsivenessIoWeight: "I/O-activity weight in R",
+  priorityBehaviorWeight: "Behaviour priority multiplier",
+  priorityFairnessWeight: "Fairness multiplier",
+  fairnessWaitDivisor: "Fairness aging interval (ticks)",
+  quantumHighThreshold: "High-responsiveness threshold",
+  quantumMidThreshold: "Low-responsiveness threshold",
+  quantumHigh: "Quantum — high band (ticks)",
+  quantumMid: "Quantum — middle band (ticks)",
+  quantumLow: "Quantum — batch band (ticks)",
+  transitionThreshold: "Transition detector threshold",
+  transitionPersistence: "Transition confirmation count",
+  transitionCooldown: "Transition cooldown (ticks)",
+  transitionBaselineAlpha: "Baseline EMA alpha",
+  stabilitySettlePeriod: "Stability settle period (ticks)",
+  enableTransitionDetection: "Transition detection enabled",
+  enableStabilityControls: "Stability controls enabled",
+};
+
+export function configParamLabel(key: keyof AbcsConfigInput): string {
+  return CONFIG_PARAM_LABELS[key] ?? key;
+}
+
+/** Diff custom vs default; only numeric/boolean params the UI can edit. */
+export function diffAbcsConfig(
+  custom: Partial<AbcsConfigInput>,
+): { key: keyof AbcsConfigInput; label: string; from: number; to: number }[] {
+  const out: { key: keyof AbcsConfigInput; label: string; from: number; to: number }[] = [];
+  for (const key of Object.keys(CONFIG_PARAM_LABELS) as (keyof AbcsConfigInput)[]) {
+    const def = DEFAULT_ABCS_CONFIG[key];
+    const cur = custom[key];
+    if (cur === undefined) continue;
+    if (typeof def === "number" && typeof cur === "number" && cur !== def) {
+      out.push({ key, label: configParamLabel(key), from: def, to: cur });
+    } else if (typeof def === "boolean" && typeof cur === "boolean" && cur !== def) {
+      out.push({ key, label: configParamLabel(key), from: def ? 1 : 0, to: cur ? 1 : 0 });
+    }
+  }
+  return out;
+}
+
+/**
+ * Run default ABCS and custom ABCS on the same workload, sharing the
+ * same RR/MLFQ baselines (config never affects baselines).
+ */
+export function runConfigComparison(
+  workload: Workload,
+  custom: Partial<AbcsConfigInput>,
+): ConfigComparison {
+  const defaultResults = runDemoComparison(workload);
+  // Only pass truly-differing keys so defaults stay authoritative for the rest.
+  const changed = diffAbcsConfig(custom);
+  const abcsOverride: Partial<AbcsConfigInput> = {};
+  for (const c of changed) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (abcsOverride as any)[c.key] =
+      typeof DEFAULT_ABCS_CONFIG[c.key] === "boolean" ? c.to !== 0 : c.to;
+  }
+  const customResults = runDemoComparison(workload, abcsOverride);
+  return { defaultResults, customResults, changedParams: changed };
 }
 
 function endOf(gantt: readonly GanttInterval[]): number {
@@ -80,6 +165,8 @@ export interface AlgorithmDecision {
 
 export interface AbcsDecisionDetail {
   readonly processId: string;
+  /** Full recorded decision (from scheduler's actual values at dispatch). */
+  readonly record: AbcsDecisionRecord | null;
   /** Latest behaviour sample at or before the decision time. */
   readonly latestSample: BehaviourHistorySample | null;
   /** Transition / policy events within [-8, +2] ticks of the decision. */
@@ -209,6 +296,11 @@ function buildAbcsDetail(
   const processId = dispatch?.processId;
   if (!processId) return null;
 
+  // Pull the recorded decision for this exact time (from scheduler's
+  // actual values — never reconstructed from guesses).
+  const record =
+    abcs.decisionRecords.find((r) => r.time === time) ?? null;
+
   let latestSample: BehaviourHistorySample | null = null;
   for (const s of abcs.behaviourHistory) {
     if (s.processId === processId && s.time <= time) {
@@ -230,6 +322,7 @@ function buildAbcsDetail(
 
   return {
     processId,
+    record,
     latestSample,
     nearbyPolicyEvents,
     outcome: interval

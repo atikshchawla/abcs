@@ -103,8 +103,11 @@ export interface ProcessFinalState {
 }
 
 export interface BehaviourScores {
+  /** C = clamp(EMA(CPU burst length) / cpuDemandDivisor, 0, 1). */
   readonly cpuDemandScore: number;
+  /** I = clamp(EMA(I/O blocks per ioRateWindowCpuTicks CPU ticks), 0, 1). */
   readonly ioActivityScore: number;
+  /** R = responsivenessCpuWeight·(1−C) + responsivenessIoWeight·I, in [0,1]. */
   readonly latencySensitivityScore: number;
 }
 
@@ -116,6 +119,46 @@ export interface BehaviourHistorySample {
   readonly emaBurstLength?: number;
   readonly event?: "TRANSITION_DETECTED" | "POLICY_ADJUSTMENT";
   readonly note?: string;
+}
+
+/** Per-process contribution snapshot recorded at an ABCS dispatch decision. */
+export interface AbcsProcessContribution {
+  readonly processId: string;
+  /** C — cpu demand score at decision time. */
+  readonly cpuDemandScore: number;
+  /** I — io activity score at decision time. */
+  readonly ioActivityScore: number;
+  /** R — responsiveness score at decision time. */
+  readonly responsivenessScore: number;
+  /** READY waiting time used in the fairness term (ticks). */
+  readonly readyWait: number;
+  /** behaviourContribution = priorityBehaviorWeight × R. */
+  readonly behaviorContribution: number;
+  /** fairnessContribution = priorityFairnessWeight × (readyWait / fairnessWaitDivisor). */
+  readonly fairnessContribution: number;
+  /** totalPriority = behaviorContribution + fairnessContribution. */
+  readonly totalPriority: number;
+}
+
+/**
+ * Full ABCS internal decision record for one dispatch. Recorded from the
+ * scheduler's actual values at decision time — never reconstructed after
+ * the fact from guesses.
+ */
+export interface AbcsDecisionRecord {
+  readonly time: number;
+  readonly selectedProcessId: string | null;
+  readonly quantum: number | null;
+  /** Why this quantum was chosen (band or transition reset). */
+  readonly quantumReason: string;
+  /** Plain-language selection reason. */
+  readonly reason: string;
+  /** Every READY process's contribution, sorted by totalPriority desc. */
+  readonly contributions: readonly AbcsProcessContribution[];
+  /** True if a transition was confirmed at/near this decision. */
+  readonly transitionDetected: boolean;
+  /** Transition/policy notes active at this decision, if any. */
+  readonly policyNotes: readonly string[];
 }
 
 export interface MetricsSummary {
@@ -166,6 +209,8 @@ export interface SimulationResult {
   readonly processMetrics: readonly ProcessMetricsRow[];
   readonly metrics: MetricsSummary;
   readonly behaviourHistory: readonly BehaviourHistorySample[];
+  /** ABCS-only: full decision records (one per dispatch). Empty for RR/MLFQ. */
+  readonly decisionRecords: readonly AbcsDecisionRecord[];
   readonly completed: boolean;
 }
 
@@ -176,17 +221,35 @@ export interface SimulationConfigInput {
   readonly abcs?: Partial<AbcsConfigInput>;
 }
 
+/**
+ * ABCS configuration. All weights/thresholds are tunable experimental
+ * parameters, not proven-optimal values. Formulas:
+ *
+ *   C = clamp(EMA(CPU burst) / cpuDemandDivisor, 0, 1)
+ *   I = clamp(EMA(I/O blocks per ioRateWindowCpuTicks CPU ticks), 0, 1)
+ *   R = responsivenessCpuWeight·(1−C) + responsivenessIoWeight·I
+ *
+ *   Priority = priorityBehaviorWeight·R
+ *            + priorityFairnessWeight·(READY wait / fairnessWaitDivisor)
+ *
+ *   Quantum: R ≥ quantumHighThreshold → quantumHigh
+ *            R ≥ quantumMidThreshold → quantumMid
+ *            else                    → quantumLow
+ */
 export interface AbcsConfigInput {
   readonly emaAlpha: number;
-  readonly burstNormCap: number;
-  readonly ioNormCap: number;
-  readonly latencyBlockingBoost: number;
-  readonly quantumLevels: readonly number[];
-  readonly cpuDemandQuantumThreshold: number;
-  readonly latencyQuantumThreshold: number;
-  readonly agingWeight: number;
-  readonly agingCap: number;
-  readonly latencyPriorityWeight: number;
+  readonly cpuDemandDivisor: number;
+  readonly ioRateWindowCpuTicks: number;
+  readonly responsivenessCpuWeight: number;
+  readonly responsivenessIoWeight: number;
+  readonly priorityBehaviorWeight: number;
+  readonly priorityFairnessWeight: number;
+  readonly fairnessWaitDivisor: number;
+  readonly quantumHighThreshold: number;
+  readonly quantumMidThreshold: number;
+  readonly quantumHigh: number;
+  readonly quantumMid: number;
+  readonly quantumLow: number;
   readonly transitionThreshold: number;
   readonly transitionPersistence: number;
   readonly transitionCooldown: number;

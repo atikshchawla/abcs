@@ -26,19 +26,19 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
         <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="mx-auto flex max-w-7xl items-center gap-x-4 px-4 py-2">
+          <div className="mx-auto flex max-w-[1440px] items-center gap-x-3 px-3 py-1.5">
             <span className="text-sm font-bold tracking-tight">ABCS</span>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              Scheduler comparison simulator
+            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+              Adaptive Behaviour-Aware CPU Scheduler
             </span>
             <span className="ml-auto text-[10px] text-zinc-400 dark:text-zinc-500">
               Simulator — not a real OS scheduler
             </span>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-3">{children}</main>
-        <footer className="border-t border-zinc-200 px-4 py-2 text-center text-[10px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-          Adaptive Behaviour-Aware CPU Scheduler · discrete-event simulation · integer ticks
+        <main className="mx-auto w-full max-w-[1440px] flex-1 px-3 py-2">{children}</main>
+        <footer className="border-t border-zinc-200 px-3 py-1.5 text-center text-[10px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+          Discrete-event simulation · integer ticks · same immutable workload for all algorithms
         </footer>
       </body>
     </html>

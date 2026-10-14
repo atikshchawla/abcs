@@ -581,6 +581,11 @@ export function runSimulation(
       ? scheduler.getBehaviourHistory()
       : [];
 
+  const decisionRecords =
+    typeof scheduler.getDecisionRecords === "function"
+      ? scheduler.getDecisionRecords()
+      : [];
+
   return {
     runId: deterministicRunId(algorithm, workload.name, config),
     algorithm,
@@ -591,6 +596,7 @@ export function runSimulation(
     processMetrics: buildProcessMetricsRows(processFinalStates),
     metrics,
     behaviourHistory,
+    decisionRecords,
     completed: true,
   };
 }
