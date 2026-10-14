@@ -268,3 +268,58 @@ required flows.
   config, runConfigComparison changed-params report, diffAbcsConfig).
   Gates: typecheck clean; 141 tests passing (12 files); lint clean;
   production build succeeds.
+
+## Round — RR/MLFQ queue visualisations + ABCS Settings drawer (2026-01-15)
+
+- **Installed `@radix-ui/react-dialog`** for the accessible slide-over
+  drawer (focus trap, Escape, overlay, ARIA).
+- **`src/lib/demo/queueReplay.ts`**: pure event-replay reconstruction
+  of scheduler queue state at any simulated time.
+  - `reconstructRrQueue` — rebuilds the engine FIFO ready-queue order
+    and running process by replaying DISPATCH / QUANTUM_EXPIRED /
+    PREEMPTION / PROCESS_ARRIVAL / IO_COMPLETE / CPU_BURST_COMPLETE /
+    PROCESS_TERMINATED events. No fabricated transitions.
+  - `reconstructMlfqQueues` — same plus per-level queue bucketing.
+    Tracks demotion on full-quantum expiry, I/O boost to top
+    (`ioBoostsToTop`), and periodic boost (every `boostInterval` global
+    CPU ticks, computed from gantt busy time). Records movement history
+    (demotion / io-boost / periodic-boost / arrival).
+  - `nearestDispatchAt` — finds the DISPATCH nearest to a target time
+    (latest at-or-before, fallback first-after) so all three algorithm
+    panels stay synced by **simulated time**, not event index.
+- **`MiniTimeline`** component: shared single-lane Gantt SVG (idle
+  hatch, playhead, clickable axis scrub, active-interval caption) used
+  by both baseline panels.
+- **`SettingsDrawer`** (replaces inline `ConfigPanel`): right-side
+  slide-over via Radix Dialog. Sticky header (title + close) and
+  sticky footer (Apply & Run / Reset to Defaults / Discard Changes).
+  Scrollable body groups 17 numeric params by concern (Behaviour
+  estimation, Responsiveness & priority, Quantum bands, Transition
+  detection, Stability controls). Each row has a range slider + numeric
+  input with bounds; modified params show amber "was N" badge and
+  highlighted border. Unsaved-changes banner and validation (R-weight
+  sum ≤ 1, quantum thresholds ordered, per-param bounds). Draft resets
+  from applied config on open; Discard reverts and closes; only
+  Apply & Run commits.
+- **`RrPanel`** (replaces `BaselinePanel` for RR): MiniTimeline +
+  running-process token (colour + quantum badge) + FIFO ready-queue
+  token row `[P2]→[P3]→[P1]` with head label, reconstructed from the
+  event stream. Decision explanation with last-dispatch reason and
+  last-trigger event. Expandable step-by-step queue history
+  (DISPATCH / QUANTUM EXPIRED / IO COMPLETE / ARRIVAL / PREEMPTED).
+- **`MlfqPanel`** (replaces `BaselinePanel` for MLFQ): MiniTimeline +
+  running-process token with level + quantum + 3 queue lanes
+  (Q0 top / Q1 middle / Q2 bottom) with colour-coded tokens in FIFO
+  order, reconstructed from the event stream. Decision explanation
+  with last-dispatch reason and most recent queue movement. Expandable
+  movements list (demotion / io-boost / periodic-boost / arrival).
+- **DemoApp reworked**: gear button in the toolbar (amber dot when a
+  custom config is active) opens `SettingsDrawer`; embedded
+  `ConfigPanel` removed; `BaselinePanel` replaced by `RrPanel` +
+  `MlfqPanel` side by side. Time sync across the three panels via the
+  shared `selectedTime` playhead and `nearestDispatchAt`.
+- Removed `ConfigPanel.tsx` and `BaselinePanel.tsx`.
+- Tests: +16 in `src/tests/integration/queueReplay.test.ts` (RR FIFO
+  invariants, MLFQ level bucketing, determinism, nearestDispatchAt
+  behaviour). Gates: typecheck clean; **157 tests passing (13 files)**;
+  lint clean; production build succeeds.

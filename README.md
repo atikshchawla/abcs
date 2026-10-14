@@ -49,17 +49,25 @@ workload and provides:
   C/I/R behaviour-history chart with selected-decision and transition
   markers.
 - **RR and MLFQ panels (two columns below):** mini timelines on the
-  same time scale, FIFO/queue explanations, and a short comparison with
-  ABCS at the same simulated time.
+  same time scale, plus real queue visualisations reconstructed from
+  the event stream — RR shows the running process and the FIFO ready
+  queue as colour-coded tokens (`[P2]→[P3]→[P1]`) with a step-by-step
+  queue history; MLFQ shows the running process with its queue level
+  and three queue lanes (Q0/Q1/Q2) with tokens, plus a movements list
+  (demotion / I/O boost / periodic boost). Both panels sync to the
+  selected simulated time via `nearestDispatchAt`.
 - **Results summary:** avg response / waiting / turnaround, completed
   count, subtle best-of highlight, and an auto-generated honest
   comparison sentence.
-- **ABCS Configuration panel (collapsed by default):** edit 17 numeric
-  parameters (EMA alpha, burst divisor, R weights, priority/fairness
-  multipliers, quantum bands, transition thresholds, …) with
-  validation, Reset to Defaults, and Run with config. RR/MLFQ
-  baselines are never affected by ABCS config changes. A "default vs
-  custom" diff is shown after a custom run.
+- **ABCS Settings drawer (gear button in the toolbar):** right-side
+  slide-over for editing 17 numeric parameters grouped by concern
+  (Behaviour estimation, Responsiveness & priority, Quantum bands,
+  Transition detection, Stability controls). Each row has a range
+  slider + numeric input with bounds; validation rejects invalid
+  combinations (R-weight sum, quantum threshold ordering, per-param
+  bounds). Sticky footer with Apply & Run / Reset to Defaults /
+  Discard Changes. RR/MLFQ baselines are never affected by ABCS
+  config changes.
 - **Decision playback:** Prev / Play / Next / Reset / Jump-to-first-
   transition, synchronized across the ABCS timeline, React Flow stage,
   behaviour chart, and both baseline panels.

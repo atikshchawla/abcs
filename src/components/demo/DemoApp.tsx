@@ -16,10 +16,11 @@ import {
 } from "@/lib/demo/compare";
 import { ResultCards } from "@/components/demo/ResultCards";
 import { AbcsTimeline } from "@/components/demo/AbcsTimeline";
-import { BaselinePanel } from "@/components/demo/BaselinePanel";
+import { RrPanel } from "@/components/demo/RrPanel";
+import { MlfqPanel } from "@/components/demo/MlfqPanel";
 import { DecisionFlow, type FlowStage } from "@/components/demo/DecisionFlow";
 import { BehaviourChart } from "@/components/demo/BehaviourChart";
-import { ConfigPanel } from "@/components/demo/ConfigPanel";
+import { SettingsDrawer } from "@/components/demo/SettingsDrawer";
 import { EventLog } from "@/components/simulation/EventLog";
 
 export function DemoApp() {
@@ -33,9 +34,7 @@ export function DemoApp() {
   const [running, setRunning] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
-  const [lastCustomDiff, setLastCustomDiff] = useState<
-    { key: keyof AbcsConfigInput; label: string; from: number; to: number }[] | null
-  >(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [configUsed, setConfigUsed] = useState<Partial<AbcsConfigInput> | null>(null);
   const playTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -56,11 +55,12 @@ export function DemoApp() {
           setDecisionIdx(0);
           setFocusedStage(3);
           setPlaying(false);
-          setConfigUsed(abcsOverride && Object.keys(abcsOverride).length > 0 ? abcsOverride : null);
+          setConfigUsed(
+            abcsOverride && Object.keys(abcsOverride).length > 0 ? abcsOverride : null,
+          );
         } catch (err) {
           setResults(null);
           setDecisionPoints([]);
-          setLastCustomDiff(null);
           setConfigUsed(null);
           setError(err instanceof Error ? err.message : String(err));
         } finally {
@@ -93,7 +93,6 @@ export function DemoApp() {
         }
         return i + 1;
       });
-      // Cycle focused stage on each playback step for visual variety.
       setFocusedStage((s) => ((s + 1) % 6) as FlowStage);
     }, 900);
     return () => {
@@ -150,6 +149,8 @@ export function DemoApp() {
     ? results.ABCS.events.filter((e: SimulationEvent) => e.time <= selectedTime)
     : [];
 
+  const hasCustomConfig = configUsed !== null;
+
   return (
     <div className="flex min-h-[calc(100vh-6rem)] flex-col gap-2">
       {/* Section A — compact header & controls */}
@@ -158,7 +159,9 @@ export function DemoApp() {
         className="flex flex-wrap items-center gap-2.5 rounded-lg border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900"
       >
         <div className="min-w-0">
-          <p className="text-xs font-bold tracking-tight">ABCS — Adaptive Behaviour-Aware CPU Scheduler</p>
+          <p className="text-xs font-bold tracking-tight">
+            ABCS — Adaptive Behaviour-Aware CPU Scheduler
+          </p>
           <p className="text-[10px] text-zinc-500">
             Discrete-event simulator · not a real OS scheduler · integer ticks
           </p>
@@ -178,7 +181,10 @@ export function DemoApp() {
             ))}
           </select>
         </label>
-        <p className="min-w-0 flex-1 truncate text-[10px] text-zinc-500" title={meta?.description}>
+        <p
+          className="min-w-0 flex-1 truncate text-[10px] text-zinc-500"
+          title={meta?.description}
+        >
           {meta?.description}
         </p>
         <button
@@ -190,8 +196,39 @@ export function DemoApp() {
           {running ? "Running…" : "Run Comparison"}
         </button>
 
+        {/* Settings gear */}
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          className="relative h-7 shrink-0 rounded-md border border-zinc-300 px-2 text-xs font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          aria-label="Open ABCS settings"
+          title="ABCS Settings"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          {hasCustomConfig && (
+            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-amber-500" />
+          )}
+        </button>
+
         {/* Playback controls */}
-        <div className="flex items-center gap-1 border-l border-zinc-200 pl-2.5 dark:border-zinc-700" role="toolbar" aria-label="Decision playback">
+        <div
+          className="flex items-center gap-1 border-l border-zinc-200 pl-2.5 dark:border-zinc-700"
+          role="toolbar"
+          aria-label="Decision playback"
+        >
           <button
             type="button"
             onClick={() => {
@@ -247,11 +284,13 @@ export function DemoApp() {
             </button>
           )}
           <span className="ml-1 text-[10px] tabular-nums text-zinc-400">
-            {decisionPoints.length > 0 ? `${decisionIdx + 1}/${decisionPoints.length} · t=${selectedTime}` : "—"}
+            {decisionPoints.length > 0
+              ? `${decisionIdx + 1}/${decisionPoints.length} · t=${selectedTime}`
+              : "—"}
           </span>
         </div>
 
-        {configUsed && (
+        {hasCustomConfig && (
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-200">
             custom config
           </span>
@@ -259,26 +298,13 @@ export function DemoApp() {
       </section>
 
       {error && (
-        <div role="alert" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+        <div
+          role="alert"
+          className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+        >
           Simulation failed: {error}
         </div>
       )}
-
-      <ConfigPanel
-        onRunWithConfig={(draft) => {
-          run(draft);
-          // Compute diff for the compare view (only numeric keys).
-          import("@/lib/demo/compare").then(({ diffAbcsConfig }) => {
-            setLastCustomDiff(diffAbcsConfig(draft));
-          });
-        }}
-        onRunDefault={() => {
-          setLastCustomDiff(null);
-          run();
-        }}
-        running={running}
-        lastCustomDiff={lastCustomDiff}
-      />
 
       {results && (
         <>
@@ -301,19 +327,25 @@ export function DemoApp() {
                   <span>
                     <span className="text-zinc-500">priority:</span>{" "}
                     <span className="font-semibold tabular-nums">
-                      {abcsRecord.contributions.find((c) => c.processId === abcsRecord.selectedProcessId)?.totalPriority.toFixed(1) ?? "—"}
+                      {abcsRecord.contributions.find(
+                        (c) => c.processId === abcsRecord.selectedProcessId,
+                      )?.totalPriority.toFixed(1) ?? "—"}
                     </span>
                   </span>
                   <span>
                     <span className="text-zinc-500">quantum:</span>{" "}
-                    <span className="font-semibold tabular-nums">{abcsRecord.quantum ?? "—"}</span>
+                    <span className="font-semibold tabular-nums">
+                      {abcsRecord.quantum ?? "—"}
+                    </span>
                   </span>
                 </>
               )}
               <span>
                 <span className="text-zinc-500">transition:</span>{" "}
                 {hasTransition ? (
-                  <span className="font-medium text-amber-600 dark:text-amber-400">confirmed</span>
+                  <span className="font-medium text-amber-600 dark:text-amber-400">
+                    confirmed
+                  </span>
                 ) : (
                   <span className="text-zinc-400">none</span>
                 )}
@@ -321,7 +353,9 @@ export function DemoApp() {
               {results.ABCS.metrics.policyChangeCount > 0 && (
                 <span className="text-zinc-500">
                   policy changes:{" "}
-                  <span className="font-medium tabular-nums">{results.ABCS.metrics.policyChangeCount}</span>
+                  <span className="font-medium tabular-nums">
+                    {results.ABCS.metrics.policyChangeCount}
+                  </span>
                 </span>
               )}
             </div>
@@ -351,8 +385,7 @@ export function DemoApp() {
 
           {/* Section C — RR and MLFQ side by side */}
           <section aria-label="Baseline comparisons" className="grid gap-2 lg:grid-cols-2">
-            <BaselinePanel
-              algorithm="RR"
+            <RrPanel
               result={results.RR}
               processIds={results.processIds}
               duration={results.duration}
@@ -360,8 +393,7 @@ export function DemoApp() {
               abcsSelectedProcess={abcsSelectedProcess}
               onSelectTime={onSelectTime}
             />
-            <BaselinePanel
-              algorithm="MLFQ"
+            <MlfqPanel
               result={results.MLFQ}
               processIds={results.processIds}
               duration={results.duration}
@@ -373,7 +405,9 @@ export function DemoApp() {
 
           {/* Section D — results summary */}
           <ResultCards results={results} />
-          <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{sentence}</p>
+          <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">
+            {sentence}
+          </p>
 
           {/* Section E — expandable event log */}
           <section className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
@@ -383,7 +417,9 @@ export function DemoApp() {
               className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs font-medium text-zinc-600 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
               aria-expanded={showEvents}
             >
-              <span className={`inline-block transition-transform ${showEvents ? "rotate-90" : ""}`}>▸</span>
+              <span className={`inline-block transition-transform ${showEvents ? "rotate-90" : ""}`}>
+                ▸
+              </span>
               ABCS event log (to t={selectedTime}) — {abcsEventsUpTo.length} events
             </button>
             {showEvents && (
@@ -400,6 +436,15 @@ export function DemoApp() {
           Select a workload and press Run Comparison.
         </div>
       )}
+
+      {/* Settings drawer */}
+      <SettingsDrawer
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        appliedConfig={configUsed}
+        running={running}
+        onApplyAndRun={(draft) => run(draft)}
+      />
     </div>
   );
 }
