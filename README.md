@@ -1,36 +1,111 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ABCS — Adaptive Behaviour-Aware CPU Scheduler
 
-## Getting Started
+A discrete-event simulator that studies whether runtime behaviour
+estimates, workload-transition detection, stability controls, and
+fairness safeguards can improve responsiveness on mixed and changing
+CPU workloads. ABCS is compared against Round Robin (RR) and Multilevel
+Feedback Queue (MLFQ) baselines on identical workloads.
 
-First, run the development server:
+> **Scope:** This is a *simulator*, not a real OS kernel scheduler. It
+> never changes the host machine's actual process scheduling. All time
+> is integer simulated time units ("ticks").
+
+## Prerequisites
+
+- Node.js 22+ (developed on v22.16)
+- npm 11+
+
+## Installation
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Commands
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Command             | Purpose                                      |
+| ------------------- | -------------------------------------------- |
+| `npm run dev`       | Start the development server                 |
+| `npm run build`     | Production build                             |
+| `npm run start`     | Serve the production build                   |
+| `npm run lint`      | ESLint                                       |
+| `npm run typecheck` | TypeScript type checking (no emit)           |
+| `npm test`          | Run all Vitest tests once                    |
+| `npm run test:watch`| Run tests in watch mode                      |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Using the app
 
-## Learn More
+- **`/`** — Overview, links, and a "Run Demo" action.
+- **`/simulation`** — Pick a workload and algorithm (RR, MLFQ, ABCS),
+  run the discrete-event simulation, and replay it with a Gantt chart,
+  process table, behaviour panel, event log, and metrics.
+- **`/compare`** — Run RR, MLFQ, and ABCS against the exact same
+  workload and inspect metric tables and charts.
+- **`/methodology`** — What is simulated, algorithm rules, behaviour
+  model formulas, metric definitions, and limitations.
 
-To learn more about Next.js, take a look at the following resources:
+Long or repeated benchmark work can also be driven through:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `POST /api/simulate` — one workload + one algorithm → trace + metrics.
+- `POST /api/compare` — one workload + many algorithms → comparable results.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Algorithms (summary)
 
-## Deploy on Vercel
+- **Round Robin (RR):** FIFO ready queue, fixed configurable quantum.
+  A process that exhausts its quantum and remains READY returns to the
+  queue tail.
+- **Multilevel Feedback Queue (MLFQ):** 3 queues; higher queues use
+  shorter quanta. New processes enter the top queue. A process that
+  consumes a full quantum without blocking is demoted. Processes that
+  block for I/O return to the top queue. Periodic priority boosts
+  prevent starvation.
+- **ABCS:** behaviour-aware adaptive policy. Tracks per-process
+  behaviour scores (CPU demand, I/O activity, latency sensitivity)
+  via exponential moving averages of observed signals. Selects a
+  bounded adaptive quantum, combines latency-sensitivity evidence with
+  READY-wait aging for effective priority, detects sustained workload
+  transitions, and applies stability cooldowns and fairness safeguards.
+  See `/methodology` for exact formulas and defaults.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Metrics (summary)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Response time, turnaround time, waiting time (READY only), CPU
+service, I/O blocked time, throughput, CPU utilization, context
+switches, maximum READY wait, fairness (Jain's index on normalized
+CPU service), adaptation delay, and policy-change frequency. Full
+definitions live in `src/lib/simulation/metrics.ts` and on the
+Methodology page.
+
+## Scenarios and seeds
+
+Twelve deterministic built-in scenarios (short jobs, CPU-heavy,
+I/O-heavy, mixed, transitions, bursty, noisy, starvation stress,
+overload, idle gaps, …) plus a seeded random workload generator. The
+same seed + config always generates the same workload. Final benchmark
+results use held-out seeds that are never used for tuning.
+
+## Tests
+
+```bash
+npm test
+```
+
+Unit tests cover EMA, state transitions, scheduler ordering, metrics
+formulas, transition detection, and seeded generation. Integration
+tests cover complete algorithm runs, invariants, determinism, and the
+compare pipeline.
+
+## Limitations
+
+- Single simulated CPU; no multicore, cache, or memory hierarchy.
+- Abstract time units; not calibrated to real wall-clock milliseconds.
+- ABCS behaviour scores are estimates from observed signals only —
+  they are not ground truth and do not sum to 1.
+- Scheduler decisions use only past/current observations; future phase
+  durations are known to the simulator engine only.
+- Results depend on workload design; ABCS is not claimed to be
+  universally better than RR or MLFQ.
+
+## License
+
+Private project. See repository history for details.
