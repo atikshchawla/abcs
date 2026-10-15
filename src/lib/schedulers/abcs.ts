@@ -221,8 +221,8 @@ export class AbcsScheduler implements Scheduler {
 
     const reason =
       `selected: highest priority ${best.totalPriority.toFixed(1)} ` +
-      `(behaviour ${best.behaviorContribution.toFixed(1)} = 70×R(${scores.latencySensitivityScore.toFixed(2)}), ` +
-      `fairness ${best.fairnessContribution.toFixed(1)} = 10×wait(${best.readyWait})/4) ` +
+      `(behaviour ${best.behaviorContribution.toFixed(1)} = ${this.cfg.priorityBehaviorWeight}×R(${scores.latencySensitivityScore.toFixed(2)}), ` +
+      `fairness ${best.fairnessContribution.toFixed(1)} = ${this.cfg.priorityFairnessWeight}×wait(${best.readyWait})/${this.cfg.fairnessWaitDivisor}) ` +
       `among ${ready.length} READY process(es); quantum ${quantum} (${quantumReason})`;
 
     const transitionDetected = time - this.lastTransitionTime < 5;
@@ -250,9 +250,14 @@ export class AbcsScheduler implements Scheduler {
     if (ready.length === 0) {
       return { preempt: false, reason: "no READY processes" };
     }
+    // Score the incumbent with the SAME formula as challengers. A running
+    // process has currentReadyWait = 0 (it is not READY), so its fairness
+    // term is 0 — but the formula is identical, avoiding the asymmetric
+    // comparison where challengers got a free fairness advantage.
     const currentScores = this.model(currentProcessId).scores;
     const currentPriority =
-      this.cfg.priorityBehaviorWeight * currentScores.latencySensitivityScore;
+      this.cfg.priorityBehaviorWeight * currentScores.latencySensitivityScore +
+      0; // running process: currentReadyWait = 0
     let bestPriority = -Infinity;
     let bestId = "";
     for (const view of ready) {

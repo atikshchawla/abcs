@@ -323,3 +323,167 @@ required flows.
   invariants, MLFQ level bucketing, determinism, nearestDispatchAt
   behaviour). Gates: typecheck clean; **157 tests passing (13 files)**;
   lint clean; production build succeeds.
+
+## Round — UI/UX, visualization & correctness overhaul (2026-01-15)
+
+Full audit-driven pass fixing simulation/state inconsistencies and
+improving hierarchy, decision experience, timelines, RR/MLFQ education,
+time-sync, behaviour chart, performance reporting, settings drawer,
+playback, clutter/accessibility, and correctness. No rebuild — working
+functionality preserved.
+
+### Correctness fixes (critical)
+
+- **C4 engine — spurious QUANTUM_EXPIRED on consecutive CPU phases**
+  (`engine.ts`): `handleBurstComplete` now saves `savedQuantum =
+  cpu.quantumRemaining` before zeroing; the consecutive-CPU branch
+  requeues only if `savedQuantum <= 0`, else restores `cpu.processId` /
+  `cpu.quantumRemaining` / `intervalStart`. Previously every non-IO
+  burst completion emitted a spurious QUANTUM_EXPIRED and requeued the
+  process.
+- **C1 BehaviourChart fabricated merged series**: rewritten — per-process
+  C/I/R series with a process selector (toggle buttons, `aria-pressed`),
+  dedupes samples per time, transition markers. New props
+  `processIds`, `selectedProcess`, `onSelectProcess`.
+- **C3 DecisionFlow wrong empty state**: `buildAbcsDetail` now falls
+  back to the latest `decisionRecords` entry at-or-before the selected
+  time (not just exact dispatch match). Empty state message rewritten
+  to say "No ABCS decision at this point" instead of the misleading
+  "Run a comparison…".
+- **H7 ABCS preemption asymmetric priority**: `abcs.ts shouldPreempt`
+  now scores the incumbent with the identical formula (behaviour +
+  fairness where running readyWait = 0) vs challengers; same margin
+  logic retained.
+- **H6 hardcoded formula constants in reason string**: `abcs.ts`
+  selectProcess reason now uses `cfg.priorityBehaviorWeight` /
+  `priorityFairnessWeight` / `fairnessWaitDivisor` instead of hardcoded
+  70/10/4.
+- **H9 queueReplay ignores IO_START (consecutive IO)**: both RR and
+  MLFQ reconstruction loops now handle `IO_START` by removing the pid
+  from the ready queue.
+- **M3 quantum badges show granted not remaining**: `queueReplay.ts`
+  now computes remaining quantum = `granted − (time − runningSince)`
+  clamped to ≥ 0 for both RR and MLFQ. UI labels updated to
+  `q=N left`.
+
+### Time-sync & timelines (high)
+
+- **New `src/lib/demo/timelineUtils.ts`**: shared `idleIntervals`,
+  `niceStep`, `clampPlayhead`.
+- **H2 AbcsTimeline different time scale**: now accepts
+  `sharedDuration` (max span across ABCS/RR/MLFQ) so all three
+  timelines align on the same axis. Playhead clamped into the lane.
+  Transition markers (◆ purple) now visually distinct from
+  policy-adjustment markers (▲ amber).
+- **H3 MiniTimeline click-scrub math**: fixed CSS-pixel → user-unit
+  conversion (`userPerCss = svgW / rect.width`) so clicks map to the
+  correct simulated time. Playhead clamped. Scrub strip is a button
+  with descriptive aria-label (was an inaccessible role="slider").
+
+### State & interaction (critical/high)
+
+- **C2 stale results on workload change**: DemoApp now auto-re-runs
+  when the workload dropdown changes (guarded by a prev-ref so the
+  initial mount is not double-run), preserving the active config.
+- **H1 SettingsDrawer dirty-state vs applied config**: diffs now
+  compare the draft against the **applied** config (not defaults), so
+  reopening a custom config with no edits is not dirty, and changing a
+  value back to default is dirty (committable). "was N" badge shows the
+  applied value. Apply & Run is enabled whenever the draft is valid
+  (empty draft = revert to defaults is a valid action). Reset to
+  Defaults is enabled unless the draft already equals defaults.
+- **H4 summary-bar transition global not per-decision**: added
+  `decisionTransition` memo — shows the transition/policy-adjustment
+  event within ±2 ticks of the selected time, with type, process, and
+  time. The global `hasTransition` still gates the ↯ jump button.
+- **M7 playback/pipeline sync**: playback and prev/next/reset now reset
+  `focusedStage` to 3 (Select Process) for each new decision so the
+  React Flow highlight stays in sync with the decision being shown.
+
+### Accessibility & polish (medium)
+
+- **Reduced motion**: `app/globals.css` now honours
+  `prefers-reduced-motion: reduce` (disables non-essential
+  animations/transitions globally).
+- **Focus-visible ring**: `:focus-visible` outline (WCAG 2.4.7).
+- **BehaviourChart process selector**: simplified from
+  role="radio"/role="radiogroup" (without arrow-key handling, an a11y
+  anti-pattern) to plain `aria-pressed` toggle buttons in a
+  role="group".
+- **MetricDelta / comparison sentence**: `MetricDelta` values are now
+  `number | null` (no `?? 0` coercion); `buildComparisonSentence`
+  rewritten with proper conjunctions, trade-off note, completed-count
+  and MLFQ notes.
+- **AbcsTimeline interval tooltips**: CPU intervals and idle gaps now
+  have `<title>` tooltips (duration, quantum expiry, burst complete).
+  Interval rects are width-clipped to the lane so long intervals never
+  overflow.
+
+### Files
+
+- `src/lib/simulation/engine.ts` (C4)
+- `src/lib/schedulers/abcs.ts` (H6, H7)
+- `src/lib/demo/compare.ts` (C3, M8)
+- `src/lib/demo/queueReplay.ts` (H9, M3)
+- `src/lib/demo/timelineUtils.ts` (new)
+- `src/components/demo/BehaviourChart.tsx` (C1 rewrite)
+- `src/components/demo/AbcsTimeline.tsx` (H2)
+- `src/components/demo/MiniTimeline.tsx` (H3, a11y)
+- `src/components/demo/SettingsDrawer.tsx` (H1)
+- `src/components/demo/DecisionFlow.tsx` (C3 empty state)
+- `src/components/demo/RrPanel.tsx` (M3 label)
+- `src/components/demo/MlfqPanel.tsx` (M3 label)
+- `src/components/demo/DemoApp.tsx` (C2, H2, H4, M7, BehaviourChart props)
+- `app/globals.css` (reduced-motion, focus-visible)
+
+### Gates
+
+- typecheck clean; lint clean; **157 tests passing (13 files)** (C4
+  engine change did not break any existing RR/MLFQ/ABCS integration
+  tests); production build succeeds.
+
+## Round — Task-completion visibility + custom workload builder (2026-01-15)
+
+### Task completion visibility
+
+Clear "this task is done" indicators across the timelines and baseline
+panels, derived from the engine's recorded `processFinalStates`
+(completionTime / completed) — never fabricated.
+
+- **`src/lib/demo/timelineUtils.ts`**: new `completionMarks(result)`
+  (terminated processes + completion tick, sorted) and
+  `completedBy(result, time)` (those finished at/before a scrub time).
+- **`AbcsTimeline`**: green ✓ strip above the CPU lane at each process's
+  termination tick (two-row stagger so nearby completions never
+  overlap), thin connector down to the lane, colour swatch + process id,
+  tooltip "T# completed all work at t=N". `PAD_TOP` raised to make room.
+- **`MiniTimeline`** (RR/MLFQ): compact ✓T# markers above the lane at
+  each completion tick (`PAD_TOP` raised).
+- **`RrPanel` / `MlfqPanel`**: new **Completed** strip below the ready
+  queue / queue lanes — green ✓ chips (colour swatch + id + `@t`)
+  listing every process finished by the selected time, with a
+  `n/total finished by t=…` count and a "none yet" empty state.
+
+### Custom workload builder
+
+- **`src/components/demo/CustomWorkloadBuilder.tsx`** (new): a form to
+  define any number of tasks. Each task row has an arrival-time input
+  and an ordered list of CPU/I/O phase chips (click the CPU/I/O badge to
+  toggle type, inline duration input, per-phase remove). Per-task
+  **+ CPU** / **+ I/O** add buttons; **+ Add task** / per-task **×**
+  remove. `buildWorkload(tasks, name)` validates (arrival ≥ 0, ≥ 1 phase,
+  durations ≥ 1) and converts drafts to a `Workload` with auto ids
+  T1…Tn; returns `null` when invalid, with an inline warning.
+- **`DemoApp`**: workload dropdown gains a **Custom…** option. When
+  selected, the builder is rendered below the controls; **Run
+  Comparison** runs the built custom workload (through the same
+  `runDemoComparison` path as the built-ins). Editing tasks does not
+  auto-run — the user presses Run. `run` now resolves the workload via
+  `isCustom ? customWorkload : getDemoWorkload(id)` and reports a clear
+  error if the custom draft is incomplete.
+
+### Gates
+
+- typecheck clean; lint clean; production build succeeds. (Vitest
+  temporarily blocked by the npm `@rolldown/binding` optional-dependency
+  bug on this machine — clean `node_modules` reinstall resolves it.)

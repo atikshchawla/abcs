@@ -1,31 +1,37 @@
 "use client";
 
 import { useMemo } from "react";
-import type { GanttInterval, SimulationResult } from "@/lib/model/types";
+import type { SimulationResult } from "@/lib/model/types";
 import { colorFor } from "@/lib/demo/colors";
+import { idleIntervals, niceStep, clampPlayhead, completionMarks } from "@/lib/demo/timelineUtils";
 
 const LANE_H = 44;
 const AXIS_H = 18;
 const PAD_LEFT = 48;
 const PAD_RIGHT = 8;
-const PAD_TOP = 4;
+const PAD_TOP = 16;
 
 export function AbcsTimeline({
   result,
   processIds,
+  sharedDuration,
   selectedTime,
   onSelectTime,
 }: {
   result: SimulationResult;
   processIds: readonly string[];
+  /** Shared time-scale duration (max over all three algorithms). */
+  sharedDuration: number;
   selectedTime: number;
   onSelectTime: (time: number) => void;
 }) {
+  // Use the shared duration so ABCS / RR / MLFQ timelines align on the
+  // same time scale. Fall back to the ABCS-only span if smaller.
   const duration = useMemo(() => {
     let max = result.metrics.measurementEnd;
     for (const g of result.gantt) if (g.end > max) max = g.end;
-    return Math.max(max, 1);
-  }, [result]);
+    return Math.max(max, sharedDuration, 1);
+  }, [result, sharedDuration]);
 
   const svgW = 1100;
   const innerW = svgW - PAD_LEFT - PAD_RIGHT;
@@ -41,6 +47,10 @@ export function AbcsTimeline({
   // Highlighted interval containing selectedTime
   const active = result.gantt.find((g) => g.start <= selectedTime && selectedTime < g.end);
 
+  const playheadX = clampPlayhead(PAD_LEFT + selectedTime * scale, PAD_LEFT, innerW);
+
+  const completions = useMemo(() => completionMarks(result), [result]);
+
   return (
     <section
       aria-label="ABCS CPU timeline"
@@ -48,7 +58,7 @@ export function AbcsTimeline({
     >
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-          ABCS CPU timeline — full width, shared time axis
+          ABCS CPU timeline
         </h2>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[10px] text-zinc-500">
           {processIds.map((id) => (
@@ -67,7 +77,7 @@ export function AbcsTimeline({
             />
             idle
           </span>
-          <span>▲ purple = transition · ┆ dashed = quantum expiry</span>
+          <span>◆ transition · ▲ policy change · ┆ quantum expiry</span>
         </div>
       </div>
 
@@ -89,6 +99,30 @@ export function AbcsTimeline({
           <text x={0} y={y0 + LANE_H / 2 + 3} fontSize={10} fontWeight={600} fill="#52525b">
             ABCS
           </text>
+          {/* Completion strip — green ✓ above the lane at each process's
+              termination tick. Marks are stacked in rows when they land
+              close together so labels never overlap. */}
+          {completions.map((c, i) => {
+            const x = PAD_LEFT + c.time * scale;
+            // Two-row stagger: even index on the upper row, odd below.
+            const row = i % 2;
+            const y = 6 + row * 8;
+            const clippedX = Math.min(x, PAD_LEFT + innerW - 2);
+            return (
+              <g key={`done-${c.processId}`} transform={`translate(${clippedX},0)`}>
+                <line y1={y + 2} y2={y0} stroke="#16a34a" strokeWidth={1} opacity={0.5} />
+                <text y={y + 2} fontSize={9} textAnchor="middle" fill="#16a34a" fontWeight={700}>
+                  ✓
+                </text>
+                <text y={y + 2} x={7} fontSize={8} fill="#16a34a" fontWeight={600}>
+                  {c.processId}
+                </text>
+                <title>
+                  {c.processId} completed all work at t={c.time}
+                </title>
+              </g>
+            );
+          })}
           {/* Lane background */}
           <rect x={PAD_LEFT} y={y0} width={innerW} height={LANE_H} fill="#fafafa" stroke="#e4e4e7" strokeWidth={0.5} rx={2} />
           {/* Idle gaps */}
@@ -101,19 +135,22 @@ export function AbcsTimeline({
               height={LANE_H - 2}
               fill="url(#abcs-hatch)"
               opacity={0.7}
-            />
+            >
+              <title>CPU idle [{idle.start}, {idle.end})</title>
+            </rect>
           ))}
           {/* CPU intervals */}
           {result.gantt.map((g, i) => {
             const selected = g.start <= selectedTime && selectedTime < g.end;
             const x = PAD_LEFT + g.start * scale;
             const w = Math.max(1, (g.end - g.start) * scale);
+            const clippedW = Math.min(w, PAD_LEFT + innerW - x);
             return (
               <g key={`g-${i}`}>
                 <rect
                   x={x}
                   y={y0 + 1}
-                  width={w}
+                  width={clippedW}
                   height={LANE_H - 2}
                   fill={colorFor(g.processId, processIds)}
                   opacity={selected ? 1 : 0.88}
@@ -121,16 +158,18 @@ export function AbcsTimeline({
                   strokeWidth={selected ? 1.5 : 0}
                   className="cursor-pointer"
                   onClick={() => onSelectTime(g.start)}
+                  role="button"
+                  aria-label={`${g.processId} running ${g.start} to ${g.end}`}
                 >
                   <title>
-                    {g.processId} [{g.start}, {g.end})
+                    {g.processId} [{g.start}, {g.end}) · {g.end - g.start} ticks
                     {g.endedByQuantumExpiry ? " · quantum expired" : ""}
                     {g.endedByBurstComplete ? " · burst complete" : ""}
                   </title>
                 </rect>
-                {w >= 24 && (
+                {clippedW >= 24 && (
                   <text
-                    x={x + w / 2}
+                    x={x + clippedW / 2}
                     y={y0 + LANE_H / 2 + 3}
                     textAnchor="middle"
                     fontSize={10}
@@ -143,9 +182,9 @@ export function AbcsTimeline({
                 )}
                 {g.endedByQuantumExpiry && (
                   <line
-                    x1={x + w}
+                    x1={x + clippedW}
                     y1={y0 + 1}
-                    x2={x + w}
+                    x2={x + clippedW}
                     y2={y0 + LANE_H - 1}
                     stroke="#71717a"
                     strokeWidth={1}
@@ -155,23 +194,37 @@ export function AbcsTimeline({
               </g>
             );
           })}
-          {/* Transition / policy markers */}
-          {result.events
-            .filter((e) => e.type === "TRANSITION_DETECTED" || e.type === "POLICY_ADJUSTMENT")
-            .map((e, i) => {
-              const x = PAD_LEFT + e.time * scale;
-              return (
-                <g key={`m-${i}`} transform={`translate(${x},0)`}>
-                  <line y1={y0} y2={y0 + LANE_H} stroke="#9333ea" strokeWidth={1.5} opacity={0.85} />
-                  <polygon points={`-3,${y0} 3,${y0} 0,${y0 + 5}`} fill="#9333ea" />
-                </g>
-              );
-            })}
-          {/* Playhead */}
+          {/* Transition markers (◆ diamond) vs policy-adjustment markers (▲ triangle) */}
+          {result.events.map((e, i) => {
+            if (e.type !== "TRANSITION_DETECTED" && e.type !== "POLICY_ADJUSTMENT") return null;
+            const x = PAD_LEFT + e.time * scale;
+            const isTransition = e.type === "TRANSITION_DETECTED";
+            return (
+              <g key={`m-${i}`} transform={`translate(${x},0)`}>
+                <line
+                  y1={y0}
+                  y2={y0 + LANE_H}
+                  stroke={isTransition ? "#9333ea" : "#d97706"}
+                  strokeWidth={1.5}
+                  opacity={0.85}
+                />
+                {isTransition ? (
+                  <polygon points={`-3,${y0} 3,${y0} 0,${y0 + 5}`} fill="#9333ea">
+                    <title>Transition detected at t={e.time}</title>
+                  </polygon>
+                ) : (
+                  <polygon points={`0,${y0} -3,${y0 + 5} 3,${y0 + 5}`} fill="#d97706">
+                    <title>Policy adjustment at t={e.time}</title>
+                  </polygon>
+                )}
+              </g>
+            );
+          })}
+          {/* Playhead (clamped into the visible lane) */}
           <line
-            x1={PAD_LEFT + selectedTime * scale}
+            x1={playheadX}
             y1={y0 - 1}
-            x2={PAD_LEFT + selectedTime * scale}
+            x2={playheadX}
             y2={y0 + LANE_H + 1}
             stroke="#18181b"
             strokeWidth={1.5}
@@ -184,6 +237,7 @@ export function AbcsTimeline({
               fontSize={9}
               fill="#18181b"
               fontWeight={600}
+              pointerEvents="none"
             >
               [{active.start},{active.end}) {active.processId}
             </text>
@@ -210,25 +264,4 @@ export function AbcsTimeline({
       </div>
     </section>
   );
-}
-
-function idleIntervals(gantt: readonly GanttInterval[], duration: number): { start: number; end: number }[] {
-  const out: { start: number; end: number }[] = [];
-  let cursor = 0;
-  const sorted = [...gantt].sort((a, b) => a.start - b.start);
-  for (const g of sorted) {
-    if (g.start > cursor) out.push({ start: cursor, end: g.start });
-    cursor = Math.max(cursor, g.end);
-  }
-  if (cursor < duration) out.push({ start: cursor, end: duration });
-  return out;
-}
-
-function niceStep(duration: number): number {
-  const raw = duration / 10;
-  const pow = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1))));
-  for (const m of [1, 2, 5, 10]) {
-    if (raw <= m * pow) return m * pow;
-  }
-  return 10 * pow;
 }

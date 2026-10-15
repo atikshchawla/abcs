@@ -5,6 +5,7 @@ import type { SimulationResult } from "@/lib/model/types";
 import { colorFor } from "@/lib/demo/colors";
 import { MiniTimeline } from "@/components/demo/MiniTimeline";
 import { reconstructMlfqQueues, nearestDispatchAt } from "@/lib/demo/queueReplay";
+import { completedBy } from "@/lib/demo/timelineUtils";
 import { DEFAULT_MLFQ_CONFIG } from "@/lib/schedulers/mlfq";
 
 const LEVEL_LABELS = ["Q0 — top (interactive)", "Q1 — middle", "Q2 — bottom (batch)"];
@@ -43,6 +44,11 @@ export function MlfqPanel({
     [result, selectedTime],
   );
 
+  const done = useMemo(
+    () => completedBy(result, selectedTime),
+    [result, selectedTime],
+  );
+
   const runningLevel = snapshot.runningLevel;
   const runningColor = snapshot.running ? colorFor(snapshot.running, processIds) : null;
 
@@ -76,7 +82,7 @@ export function MlfqPanel({
             {snapshot.running}
             <span className="text-[9px] font-normal opacity-80">
               Q{runningLevel ?? 0}
-              {snapshot.runningQuantum !== null && ` · q=${snapshot.runningQuantum}`}
+              {snapshot.runningQuantum !== null && ` · q=${snapshot.runningQuantum} left`}
             </span>
           </span>
         ) : (
@@ -129,6 +135,37 @@ export function MlfqPanel({
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Completed tasks */}
+      <div className="mt-1.5">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-[10px] font-medium text-zinc-500">Completed</span>
+          <span className="text-[9px] text-zinc-400">
+            {done.length}/{processIds.length} finished by t={selectedTime}
+          </span>
+        </div>
+        <div className="flex min-h-[26px] flex-wrap items-center gap-1.5 rounded-md border border-zinc-100 bg-zinc-50 px-2 py-1 dark:border-zinc-800 dark:bg-zinc-950">
+          {done.length === 0 ? (
+            <span className="text-[10px] text-zinc-400">none yet — no process has finished</span>
+          ) : (
+            done.map((c) => (
+              <span
+                key={c.processId}
+                className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-400"
+                title={`${c.processId} completed all work at t=${c.time}`}
+              >
+                <span aria-hidden>✓</span>
+                <span
+                  className="inline-block h-2 w-2 rounded-sm"
+                  style={{ backgroundColor: colorFor(c.processId, processIds) }}
+                />
+                {c.processId}
+                <span className="tabular-nums opacity-70">@{c.time}</span>
+              </span>
+            ))
+          )}
+        </div>
       </div>
 
       {/* Decision explanation */}

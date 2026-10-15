@@ -290,16 +290,21 @@ function buildAbcsDetail(
   abcs: SimulationResult,
   time: number,
 ): AbcsDecisionDetail | null {
-  const dispatch = abcs.events.find(
-    (e) => e.type === "DISPATCH" && e.time === time,
-  );
-  const processId = dispatch?.processId;
+  // Exact dispatch at this time, else the most recent ABCS dispatch at
+  // or before it. This keeps the decision flow populated even when the
+  // selected time comes from an RR/MLFQ dispatch that ABCS did not share.
+  const exact = abcs.decisionRecords.find((r) => r.time === time) ?? null;
+  let covering: typeof exact = null;
+  if (!exact) {
+    for (const r of abcs.decisionRecords) {
+      if (r.time <= time) covering = r;
+      else break;
+    }
+  }
+  const record = exact ?? covering;
+  if (!record) return null;
+  const processId = record.selectedProcessId;
   if (!processId) return null;
-
-  // Pull the recorded decision for this exact time (from scheduler's
-  // actual values — never reconstructed from guesses).
-  const record =
-    abcs.decisionRecords.find((r) => r.time === time) ?? null;
 
   let latestSample: BehaviourHistorySample | null = null;
   for (const s of abcs.behaviourHistory) {
@@ -315,9 +320,10 @@ function buildAbcsDetail(
       e.time <= time + 2,
   );
 
+  // Outcome: the gantt interval that starts at the record's dispatch
+  // time for the selected process — never a much later interval.
   const interval =
-    abcs.gantt.find((g) => g.start === time && g.processId === processId) ??
-    abcs.gantt.find((g) => g.start >= time && g.processId === processId) ??
+    abcs.gantt.find((g) => g.start === record.time && g.processId === processId) ??
     null;
 
   return {
@@ -345,9 +351,9 @@ export interface MetricDelta {
     "avgResponseTime" | "avgWaitingTime" | "avgTurnaroundTime"
   >;
   readonly label: string;
-  readonly abcsValue: number;
-  readonly rrValue: number;
-  readonly mlfqValue: number;
+  readonly abcsValue: number | null;
+  readonly rrValue: number | null;
+  readonly mlfqValue: number | null;
   readonly pctVsRr: number | null;
   readonly pctVsMlfq: number | null;
 }
@@ -371,9 +377,9 @@ export function computeMetricDeltas(results: DemoResults): MetricDelta[] {
     return {
       metric,
       label,
-      abcsValue: abcsValue ?? 0,
-      rrValue: rrValue ?? 0,
-      mlfqValue: mlfqValue ?? 0,
+      abcsValue,
+      rrValue,
+      mlfqValue,
       pctVsRr: pctChange(rrValue, abcsValue),
       pctVsMlfq: pctChange(mlfqValue, abcsValue),
     };
@@ -392,7 +398,8 @@ export function pctChange(
 
 /**
  * Build an honest one-sentence comparison from actual results. Never
- * claims ABCS wins if the numbers disagree; reports trade-offs.
+ * claims ABCS wins if the numbers disagree; reports trade-offs. Uses
+ * proper English conjunctions instead of repeating ", while ".
  */
 export function buildComparisonSentence(results: DemoResults): string {
   const deltas = computeMetricDeltas(results);
@@ -415,9 +422,8 @@ export function buildComparisonSentence(results: DemoResults): string {
   const respDesc = describe(resp);
   const waitDesc = describe(wait);
 
-  if (respDesc) parts.push(`ABCS ${respDesc}`);
-  if (waitDesc && respDesc) parts.push(`${waitDesc}`);
-  else if (waitDesc) parts.push(`ABCS ${waitDesc}`);
+  if (respDesc) parts.push(respDesc);
+  if (waitDesc) parts.push(waitDesc);
 
   // Include turnaround only when it moves opposite to response (trade-off).
   const turnDesc = describe(turn);
@@ -433,7 +439,14 @@ export function buildComparisonSentence(results: DemoResults): string {
     parts.push(`turnaround ${turn.pctVsRr < 0 ? "fell" : "rose"} ${Math.abs(turn.pctVsRr).toFixed(1)}%`);
   }
 
-  let sentence = parts.length > 0 ? parts.join(", while ") + "." : "";
+  let sentence = "";
+  if (parts.length === 1) {
+    sentence = `ABCS ${parts[0]}.`;
+  } else if (parts.length === 2) {
+    sentence = `ABCS ${parts[0]}, while ${parts[1]}.`;
+  } else if (parts.length >= 3) {
+    sentence = `ABCS ${parts[0]}, ${parts[1]}, and ${parts[2]}.`;
+  }
 
   // Trade-off note vs MLFQ when directionally opposed to RR comparison.
   if (

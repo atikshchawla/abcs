@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AbcsConfigInput, SimulationEvent } from "@/lib/model/types";
+import type { AbcsConfigInput, SimulationEvent, Workload } from "@/lib/model/types";
 import {
   listDemoWorkloads,
   getDemoWorkload,
@@ -18,25 +18,48 @@ import { ResultCards } from "@/components/demo/ResultCards";
 import { AbcsTimeline } from "@/components/demo/AbcsTimeline";
 import { RrPanel } from "@/components/demo/RrPanel";
 import { MlfqPanel } from "@/components/demo/MlfqPanel";
-import { DecisionFlow, type FlowStage } from "@/components/demo/DecisionFlow";
+import { DecisionFlow, STAGE_TITLES, type FlowStage } from "@/components/demo/DecisionFlow";
 import { BehaviourChart } from "@/components/demo/BehaviourChart";
 import { SettingsDrawer } from "@/components/demo/SettingsDrawer";
+import {
+  CustomWorkloadBuilder,
+  DEFAULT_CUSTOM_TASKS,
+  buildWorkload,
+  type CustomTaskDraft,
+} from "@/components/demo/CustomWorkloadBuilder";
 import { EventLog } from "@/components/simulation/EventLog";
 
 export function DemoApp() {
   const workloads = useMemo(() => listDemoWorkloads(), []);
   const [workloadId, setWorkloadId] = useState("changing");
+  const [customTasks, setCustomTasks] = useState<CustomTaskDraft[]>([
+    ...DEFAULT_CUSTOM_TASKS,
+  ]);
+  const customWorkload = useMemo<Workload | null>(
+    () => buildWorkload(customTasks, "Custom"),
+    [customTasks],
+  );
+  const isCustom = workloadId === "custom";
   const [results, setResults] = useState<DemoResults | null>(null);
   const [decisionPoints, setDecisionPoints] = useState<DecisionPoint[]>([]);
   const [decisionIdx, setDecisionIdx] = useState(0);
-  const [focusedStage, setFocusedStage] = useState<FlowStage>(3);
+  const [focusedStage, setFocusedStage] = useState<FlowStage>(0);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [configUsed, setConfigUsed] = useState<Partial<AbcsConfigInput> | null>(null);
+  const [selectedProcess, setSelectedProcess] = useState<string | null>(null);
   const playTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Refs so the playback interval can read current values without
+  // stale closures: which decision we're on and which pipeline stage
+  // of that decision is glowing.
+  const playStageRef = useRef<FlowStage>(0);
+  const decisionIdxRef = useRef(0);
+  useEffect(() => {
+    decisionIdxRef.current = decisionIdx;
+  }, [decisionIdx]);
 
   const meta = getDemoWorkloadMeta(workloadId);
 
@@ -46,14 +69,20 @@ export function DemoApp() {
       setError(null);
       setTimeout(() => {
         try {
-          const workload = getDemoWorkload(workloadId);
-          if (!workload) throw new Error(`Unknown workload: ${workloadId}`);
+          const workload = isCustom ? customWorkload : getDemoWorkload(workloadId);
+          if (!workload) {
+            throw new Error(
+              isCustom
+                ? "Custom workload is incomplete — check each task's arrival time and phases."
+                : `Unknown workload: ${workloadId}`,
+            );
+          }
           const r = runDemoComparison(workload, abcsOverride);
           const points = extractDecisionPoints(r);
           setResults(r);
           setDecisionPoints(points);
           setDecisionIdx(0);
-          setFocusedStage(3);
+          setFocusedStage(0);
           setPlaying(false);
           setConfigUsed(
             abcsOverride && Object.keys(abcsOverride).length > 0 ? abcsOverride : null,
@@ -68,7 +97,7 @@ export function DemoApp() {
         }
       }, 10);
     },
-    [workloadId],
+    [workloadId, isCustom, customWorkload],
   );
 
   // Auto-run default comparison on first mount.
@@ -78,23 +107,47 @@ export function DemoApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Decision playback.
+  // Re-run when the workload changes so results never show a stale
+  // workload. Skip the very first run (already handled above).
+  const prevWorkloadRef = useRef(workloadId);
+  useEffect(() => {
+    if (prevWorkloadRef.current === workloadId) return;
+    prevWorkloadRef.current = workloadId;
+    run(configUsed ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workloadId]);
+
+  // Decision playback — walks all 6 pipeline stages WITHIN each decision
+  // before advancing. The Gantt playhead (selectedTime) stays pinned to
+  // the current decision's time while its stages glow one by one, so the
+  // flow highlight always correlates with the decision on the timeline.
   useEffect(() => {
     if (playTimer.current) {
       clearInterval(playTimer.current);
       playTimer.current = null;
     }
     if (!playing || decisionPoints.length === 0) return;
+
+    // The play button already reset playStageRef and focusedStage to 0;
+    // the interval below advances them from there.
     playTimer.current = setInterval(() => {
-      setDecisionIdx((i) => {
-        if (i >= decisionPoints.length - 1) {
-          setPlaying(false);
-          return i;
-        }
-        return i + 1;
-      });
-      setFocusedStage((s) => ((s + 1) % 6) as FlowStage);
-    }, 900);
+      if (playStageRef.current < 5) {
+        // Advance the glow to the next stage of the SAME decision.
+        playStageRef.current = (playStageRef.current + 1) as FlowStage;
+        setFocusedStage(playStageRef.current);
+        return;
+      }
+      // Stage 5 (Update) has been shown — the decision's pipeline walk
+      // is complete. Move to the next decision, starting at Observe.
+      if (decisionIdxRef.current >= decisionPoints.length - 1) {
+        // Last decision finished — stop, leaving Update glowing.
+        setPlaying(false);
+        return;
+      }
+      playStageRef.current = 0;
+      setFocusedStage(0);
+      setDecisionIdx((i) => i + 1);
+    }, 450);
     return () => {
       if (playTimer.current) clearInterval(playTimer.current);
     };
@@ -112,6 +165,7 @@ export function DemoApp() {
         else break;
       }
       setDecisionIdx(idx);
+      setFocusedStage(0);
       setPlaying(false);
     },
     [decisionPoints],
@@ -133,6 +187,23 @@ export function DemoApp() {
     );
   }, [results]);
 
+  // Per-decision transition: did a transition or policy adjustment occur
+  // at (or within a few ticks of) the currently selected time?
+  const decisionTransition = useMemo(() => {
+    if (!results) return null;
+    const nearby = results.ABCS.events.find(
+      (e) =>
+        (e.type === "TRANSITION_DETECTED" || e.type === "POLICY_ADJUSTMENT") &&
+        Math.abs(e.time - selectedTime) <= 2,
+    );
+    if (!nearby) return null;
+    return {
+      type: nearby.type,
+      time: nearby.time,
+      processId: nearby.processId ?? null,
+    };
+  }, [results, selectedTime]);
+
   const transitionTimes = useMemo(() => {
     if (!results) return [] as number[];
     return results.ABCS.events
@@ -141,6 +212,19 @@ export function DemoApp() {
   }, [results]);
 
   const sentence = results ? buildComparisonSentence(results) : "";
+
+  // Shared duration across ABCS/RR/MLFQ timelines so all three align on
+  // the same time scale.
+  const sharedDuration = useMemo(() => {
+    if (!results) return 1;
+    let max = 0;
+    for (const algo of ["ABCS", "RR", "MLFQ"] as const) {
+      const r = results[algo];
+      if (r.metrics.measurementEnd > max) max = r.metrics.measurementEnd;
+      for (const g of r.gantt) if (g.end > max) max = g.end;
+    }
+    return Math.max(max, 1);
+  }, [results]);
 
   const abcsRecord = point?.abcsDetail?.record ?? null;
   const abcsSelectedProcess = point?.ABCS.processId ?? null;
@@ -179,13 +263,16 @@ export function DemoApp() {
                 {w.name}
               </option>
             ))}
+            <option value="custom">Custom…</option>
           </select>
         </label>
         <p
           className="min-w-0 flex-1 truncate text-[10px] text-zinc-500"
-          title={meta?.description}
+          title={isCustom ? "Define your own tasks and phases below." : meta?.description}
         >
-          {meta?.description}
+          {isCustom
+            ? "Define your own tasks and phases below."
+            : meta?.description}
         </p>
         <button
           type="button"
@@ -233,6 +320,7 @@ export function DemoApp() {
             type="button"
             onClick={() => {
               setDecisionIdx((i) => Math.max(0, i - 1));
+              setFocusedStage(0);
               setPlaying(false);
             }}
             disabled={decisionPoints.length === 0}
@@ -243,7 +331,15 @@ export function DemoApp() {
           </button>
           <button
             type="button"
-            onClick={() => setPlaying((p) => !p)}
+            onClick={() => {
+              // When starting playback, reset the pipeline glow to
+              // Observe so the walk begins at stage 0.
+              if (!playing) {
+                playStageRef.current = 0;
+                setFocusedStage(0);
+              }
+              setPlaying((p) => !p);
+            }}
             disabled={decisionPoints.length === 0}
             className="h-7 rounded border border-zinc-300 px-2 text-[10px] font-medium hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             aria-label={playing ? "Pause" : "Play"}
@@ -254,6 +350,7 @@ export function DemoApp() {
             type="button"
             onClick={() => {
               setDecisionIdx((i) => Math.min(decisionPoints.length - 1, i + 1));
+              setFocusedStage(0);
               setPlaying(false);
             }}
             disabled={decisionPoints.length === 0}
@@ -266,6 +363,7 @@ export function DemoApp() {
             type="button"
             onClick={() => {
               setDecisionIdx(0);
+              setFocusedStage(0);
               setPlaying(false);
             }}
             className="h-7 rounded border border-zinc-300 px-2 text-[10px] font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -288,6 +386,11 @@ export function DemoApp() {
               ? `${decisionIdx + 1}/${decisionPoints.length} · t=${selectedTime}`
               : "—"}
           </span>
+          {playing && (
+            <span className="text-[10px] text-violet-600 dark:text-violet-400">
+              stage {focusedStage + 1}/6 · {STAGE_TITLES[focusedStage]}
+            </span>
+          )}
         </div>
 
         {hasCustomConfig && (
@@ -296,6 +399,11 @@ export function DemoApp() {
           </span>
         )}
       </section>
+
+      {/* Custom workload builder — shown when "Custom…" is selected */}
+      {isCustom && (
+        <CustomWorkloadBuilder tasks={customTasks} onTasksChange={setCustomTasks} />
+      )}
 
       {error && (
         <div
@@ -342,9 +450,12 @@ export function DemoApp() {
               )}
               <span>
                 <span className="text-zinc-500">transition:</span>{" "}
-                {hasTransition ? (
+                {decisionTransition ? (
                   <span className="font-medium text-amber-600 dark:text-amber-400">
-                    confirmed
+                    {decisionTransition.type === "TRANSITION_DETECTED"
+                      ? "confirmed"
+                      : "policy change"}
+                    {decisionTransition.processId ? ` (${decisionTransition.processId})` : ""} @ t={decisionTransition.time}
                   </span>
                 ) : (
                   <span className="text-zinc-400">none</span>
@@ -364,6 +475,7 @@ export function DemoApp() {
             <AbcsTimeline
               result={results.ABCS}
               processIds={results.processIds}
+              sharedDuration={sharedDuration}
               selectedTime={selectedTime}
               onSelectTime={onSelectTime}
             />
@@ -378,6 +490,9 @@ export function DemoApp() {
             {/* Behaviour history */}
             <BehaviourChart
               history={results.ABCS.behaviourHistory}
+              processIds={results.processIds}
+              selectedProcess={selectedProcess}
+              onSelectProcess={setSelectedProcess}
               selectedTime={selectedTime}
               transitionTimes={transitionTimes}
             />

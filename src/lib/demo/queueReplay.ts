@@ -102,6 +102,15 @@ export function reconstructRrQueue(
         ready.push(pid);
         lastTrigger = e;
         break;
+      case "IO_START":
+        // Consecutive IO: the process re-blocked immediately after
+        // IO_COMPLETE. Remove it from the ready queue (it is BLOCKED).
+        {
+          const idx = ready.indexOf(pid);
+          if (idx >= 0) ready.splice(idx, 1);
+        }
+        lastTrigger = e;
+        break;
       case "DISPATCH": {
         const idx = ready.indexOf(pid);
         if (idx >= 0) ready.splice(idx, 1);
@@ -138,7 +147,10 @@ export function reconstructRrQueue(
           runningQuantum = null;
           runningSince = null;
         }
-        // Non-IO burst completion keeps the process running (consecutive CPU).
+        // Non-IO burst completion keeps the process running (consecutive
+        // CPU). The engine restores the saved remaining quantum, so the
+        // runningSince (original dispatch time) stays authoritative for
+        // the remaining-quantum countdown.
         lastTrigger = e;
         break;
       }
@@ -158,6 +170,12 @@ export function reconstructRrQueue(
       default:
         break;
     }
+  }
+
+  // Remaining quantum = granted − elapsed ticks since the last CPU grant.
+  // Clamped to ≥ 0 so it never goes negative.
+  if (running !== null && runningQuantum !== null && runningSince !== null) {
+    runningQuantum = Math.max(0, runningQuantum - (time - runningSince));
   }
 
   return {
@@ -262,6 +280,14 @@ export function reconstructMlfqQueues(
         lastTrigger = e;
         break;
       }
+      case "IO_START": {
+        // Consecutive IO: the process re-blocked immediately after
+        // IO_COMPLETE. Remove it from the ready queue (it is BLOCKED).
+        const idx = ready.indexOf(pid);
+        if (idx >= 0) ready.splice(idx, 1);
+        lastTrigger = e;
+        break;
+      }
       case "DISPATCH": {
         applyBoostIfNeeded(e.time);
         const idx = ready.indexOf(pid);
@@ -325,6 +351,9 @@ export function reconstructMlfqQueues(
           runningQuantum = null;
           runningSince = null;
         }
+        // Non-IO burst completion keeps the process running; the engine
+        // restores the saved remaining quantum, so runningSince stays
+        // authoritative for the countdown.
         lastTrigger = e;
         break;
       }
@@ -345,6 +374,11 @@ export function reconstructMlfqQueues(
       default:
         break;
     }
+  }
+
+  // Remaining quantum = granted − elapsed ticks since the last CPU grant.
+  if (running !== null && runningQuantum !== null && runningSince !== null) {
+    runningQuantum = Math.max(0, runningQuantum - (time - runningSince));
   }
 
   // Bucket ready processes by level, preserving FIFO order within each.

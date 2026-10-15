@@ -269,6 +269,10 @@ export function runSimulation(
     drainSchedulerEvents();
 
     cpu.processId = null;
+    // Save the quantum that was in effect before clearing CPU state so
+    // the consecutive-CPU check below sees the real remaining quantum,
+    // not the zeroed placeholder.
+    const savedQuantum = cpu.quantumRemaining;
     cpu.quantumRemaining = 0;
     cpu.burstRemaining = 0;
 
@@ -300,12 +304,14 @@ export function runSimulation(
     // Consecutive CPU phase: process stays RUNNING with the new burst.
     p.phaseRemaining = nextPhase!.duration;
     cpu.burstRemaining = nextPhase!.duration;
-    // If the quantum is also exhausted, requeue right away (handled at
-    // the decision-point ordering: quantum check runs after burst check
-    // in the same instant when both are zero).
-    if (cpu.quantumRemaining <= 0) {
+    // Only requeue if the quantum was genuinely exhausted. A burst
+    // boundary that happens to coincide with a still-positive quantum
+    // must NOT emit a spurious QUANTUM_EXPIRED.
+    if (savedQuantum <= 0) {
       requeueAfterQuantum(time, pid);
     } else {
+      cpu.processId = pid;
+      cpu.quantumRemaining = savedQuantum;
       cpu.intervalStart = time;
     }
   }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import type { AbcsConfigInput } from "@/lib/model/types";
 import { DEFAULT_ABCS_CONFIG } from "@/lib/schedulers/abcs";
-import { configParamLabel, diffAbcsConfig } from "@/lib/demo/compare";
+import { configParamLabel } from "@/lib/demo/compare";
 
 interface EditableParam {
   readonly key: keyof AbcsConfigInput;
@@ -80,22 +80,26 @@ export function SettingsDrawer({
     return () => clearTimeout(t);
   }, [open, appliedConfig]);
 
-  // Re-seed draft from applied config when appliedConfig changes while open
-  // (e.g. after Apply & Run). Skip if the user has local edits.
+  // Diff draft against the APPLIED config (not defaults) so that:
+  // - reopening with a custom config and changing nothing is NOT dirty.
+  // - changing a value back to the default IS dirty (committable).
   const appliedKey = useMemo(
     () => JSON.stringify(appliedConfig ?? {}),
     [appliedConfig],
   );
-  useEffect(() => {
-    if (!open) return;
-    const t = setTimeout(() => {
-      setDraft(appliedConfig ? { ...appliedConfig } : {});
-    }, 0);
-    return () => clearTimeout(t);
+  const activeDiff = useMemo(() => {
+    const applied = appliedConfig ?? {};
+    const out: { key: keyof AbcsConfigInput; label: string; from: number; to: number }[] = [];
+    for (const p of EDITABLE) {
+      const appliedVal = (applied[p.key] as number | undefined) ?? (DEFAULT_ABCS_CONFIG[p.key] as number);
+      const draftVal = (draft[p.key] as number | undefined) ?? appliedVal;
+      if (draftVal !== appliedVal) {
+        out.push({ key: p.key, label: configParamLabel(p.key), from: appliedVal, to: draftVal });
+      }
+    }
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appliedKey]);
-
-  const activeDiff = diffAbcsConfig(draft as Partial<AbcsConfigInput>);
+  }, [draft, appliedKey]);
   const isDirty = activeDiff.length > 0;
 
   const setNum = (key: keyof AbcsConfigInput, v: number) =>
@@ -147,7 +151,8 @@ export function SettingsDrawer({
   }, []);
 
   const handleApply = () => {
-    if (validationError || !isDirty) return;
+    if (validationError) return;
+    // Even an empty draft is valid: it means "revert to defaults".
     onApplyAndRun(draft as Partial<AbcsConfigInput>);
     onOpenChange(false);
   };
@@ -158,6 +163,8 @@ export function SettingsDrawer({
   };
 
   const handleReset = () => {
+    // Load defaults into the draft. Apply stays enabled so the user
+    // can commit the revert (empty draft = defaults).
     setDraft({});
   };
 
@@ -216,9 +223,11 @@ export function SettingsDrawer({
                     {groupName}
                   </legend>
                   {params.map((p) => {
-                    const def = DEFAULT_ABCS_CONFIG[p.key] as number;
-                    const cur = (draft[p.key] as number | undefined) ?? def;
-                    const changed = draft[p.key] !== undefined && cur !== def;
+                    const appliedVal =
+                      ((appliedConfig?.[p.key] as number | undefined) ??
+                        (DEFAULT_ABCS_CONFIG[p.key] as number));
+                    const cur = (draft[p.key] as number | undefined) ?? appliedVal;
+                    const changed = cur !== appliedVal;
                     return (
                       <label key={p.key} className="block">
                         <span className="flex items-baseline justify-between text-[10px]">
@@ -230,7 +239,7 @@ export function SettingsDrawer({
                           </span>
                           {changed && (
                             <span className="text-[9px] text-amber-600 dark:text-amber-400">
-                              was {def}
+                              was {appliedVal}
                             </span>
                           )}
                         </span>
@@ -282,7 +291,7 @@ export function SettingsDrawer({
             <button
               type="button"
               onClick={handleApply}
-              disabled={running || !isDirty || !!validationError}
+              disabled={running || !!validationError}
               className="h-8 rounded-md bg-zinc-900 px-4 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
             >
               {running ? "Running…" : "Apply & Run"}
@@ -290,7 +299,7 @@ export function SettingsDrawer({
             <button
               type="button"
               onClick={handleReset}
-              disabled={!isDirty}
+              disabled={EDITABLE.every((p) => (draft[p.key] as number | undefined) === undefined || draft[p.key] === DEFAULT_ABCS_CONFIG[p.key])}
               className="h-8 rounded-md border border-zinc-300 px-3 text-xs font-medium hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               Reset to Defaults

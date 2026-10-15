@@ -1,13 +1,14 @@
 "use client";
 
-import type { GanttInterval, SimulationResult } from "@/lib/model/types";
+import type { SimulationResult } from "@/lib/model/types";
 import { colorFor } from "@/lib/demo/colors";
+import { idleIntervals, niceStep, clampPlayhead, completionMarks } from "@/lib/demo/timelineUtils";
 
 const LANE_H = 22;
 const AXIS_H = 14;
 const PAD_LEFT = 40;
 const PAD_RIGHT = 6;
-const PAD_TOP = 2;
+const PAD_TOP = 12;
 
 /**
  * Compact single-lane Gantt timeline shared by the RR and MLFQ panels.
@@ -41,9 +42,21 @@ export function MiniTimeline({
   const active =
     result.gantt.find((g) => g.start <= selectedTime && selectedTime < g.end) ?? null;
 
+  const playheadX = clampPlayhead(PAD_LEFT + selectedTime * scale, PAD_LEFT, innerW);
+
+  const completions = completionMarks(result);
+
+  // Correct scrub math: convert CSS-pixel click offset to user units,
+  // then to simulated time. The click target spans the inner lane
+  // starting at x = PAD_LEFT in user units.
   const handleAxisClick = (e: React.MouseEvent<SVGRectElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const relX = e.clientX - rect.left - PAD_LEFT;
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    // CSS pixels per user unit.
+    const userPerCss = svgW / rect.width;
+    const clickXUser = (e.clientX - rect.left) * userPerCss;
+    const relX = clickXUser - PAD_LEFT;
     const t = Math.max(0, Math.min(duration, Math.round(relX / scale)));
     onSelectTime(t);
   };
@@ -71,6 +84,23 @@ export function MiniTimeline({
         <text x={0} y={PAD_TOP + LANE_H / 2 + 3} fontSize={9} fontWeight={600} fill="#52525b">
           {label}
         </text>
+        {/* Completion strip — green ✓ above the lane at each process's
+            termination tick. */}
+        {completions.map((c, i) => {
+          const x = Math.min(PAD_LEFT + c.time * scale, PAD_LEFT + innerW - 2);
+          const row = i % 2;
+          const y = 4 + row * 6;
+          return (
+            <g key={`done-${c.processId}`}>
+              <text x={x} y={y} fontSize={7} textAnchor="middle" fill="#16a34a" fontWeight={700}>
+                ✓{c.processId}
+              </text>
+              <title>
+                {c.processId} completed all work at t={c.time}
+              </title>
+            </g>
+          );
+        })}
         <rect
           x={PAD_LEFT}
           y={PAD_TOP}
@@ -90,18 +120,21 @@ export function MiniTimeline({
             height={LANE_H - 2}
             fill={`url(#mini-hatch-${label})`}
             opacity={0.6}
-          />
+          >
+            <title>CPU idle [{idle.start}, {idle.end})</title>
+          </rect>
         ))}
         {result.gantt.map((g, i) => {
           const selected = g.start <= selectedTime && selectedTime < g.end;
           const x = PAD_LEFT + g.start * scale;
           const w = Math.max(1, (g.end - g.start) * scale);
+          const clippedW = Math.min(w, PAD_LEFT + innerW - x);
           return (
             <g key={`g-${i}`}>
               <rect
                 x={x}
                 y={PAD_TOP + 1}
-                width={w}
+                width={clippedW}
                 height={LANE_H - 2}
                 fill={colorFor(g.processId, processIds)}
                 opacity={selected ? 1 : 0.8}
@@ -109,14 +142,18 @@ export function MiniTimeline({
                 strokeWidth={selected ? 1.2 : 0}
                 className="cursor-pointer"
                 onClick={() => onSelectTime(g.start)}
+                role="button"
+                aria-label={`${g.processId} running ${g.start} to ${g.end}`}
               >
                 <title>
-                  {g.processId} [{g.start}, {g.end})
+                  {g.processId} [{g.start}, {g.end}) · {g.end - g.start} ticks
+                  {g.endedByQuantumExpiry ? " · quantum expired" : ""}
+                  {g.endedByBurstComplete ? " · burst complete" : ""}
                 </title>
               </rect>
-              {w >= 18 && (
+              {clippedW >= 18 && (
                 <text
-                  x={x + w / 2}
+                  x={x + clippedW / 2}
                   y={PAD_TOP + LANE_H / 2 + 3}
                   textAnchor="middle"
                   fontSize={8}
@@ -130,10 +167,11 @@ export function MiniTimeline({
             </g>
           );
         })}
+        {/* Playhead (clamped) */}
         <line
-          x1={PAD_LEFT + selectedTime * scale}
+          x1={playheadX}
           y1={PAD_TOP - 1}
-          x2={PAD_LEFT + selectedTime * scale}
+          x2={playheadX}
           y2={PAD_TOP + LANE_H + 1}
           stroke="#18181b"
           strokeWidth={1.2}
@@ -141,12 +179,14 @@ export function MiniTimeline({
         {/* Clickable axis strip for scrubbing */}
         <rect
           x={PAD_LEFT}
-          y={PAD_TOP + LANE_H + AXIS_H - 4}
+          y={PAD_TOP + LANE_H}
           width={innerW}
-          height={6}
+          height={AXIS_H}
           fill="transparent"
           className="cursor-pointer"
           onClick={handleAxisClick}
+          role="button"
+          aria-label={`Click to scrub ${label} timeline to a time between 0 and ${duration}. Current time ${selectedTime}.`}
         />
         {(() => {
           const y = PAD_TOP + LANE_H + 3;
@@ -172,28 +212,4 @@ export function MiniTimeline({
       )}
     </div>
   );
-}
-
-function idleIntervals(
-  gantt: readonly GanttInterval[],
-  duration: number,
-): { start: number; end: number }[] {
-  const out: { start: number; end: number }[] = [];
-  let cursor = 0;
-  const sorted = [...gantt].sort((a, b) => a.start - b.start);
-  for (const g of sorted) {
-    if (g.start > cursor) out.push({ start: cursor, end: g.start });
-    cursor = Math.max(cursor, g.end);
-  }
-  if (cursor < duration) out.push({ start: cursor, end: duration });
-  return out;
-}
-
-function niceStep(duration: number): number {
-  const raw = duration / 10;
-  const pow = Math.pow(10, Math.floor(Math.log10(Math.max(raw, 1))));
-  for (const m of [1, 2, 5, 10]) {
-    if (raw <= m * pow) return m * pow;
-  }
-  return 10 * pow;
 }

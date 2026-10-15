@@ -36,7 +36,7 @@ function stageData(record: AbcsDecisionRecord, stage: FlowStage): StageData {
   return { stage, title: STAGE_TITLES[stage], record, selectedContrib, maxPriority };
 }
 
-const STAGE_TITLES = [
+export const STAGE_TITLES = [
   "Observe",
   "Estimate Behaviour",
   "Calculate Priority",
@@ -337,8 +337,17 @@ export function DecisionFlow({
 
   if (!record) {
     return (
-      <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-zinc-300 text-xs text-zinc-500 dark:border-zinc-700">
-        Run a comparison, then step through ABCS decisions to see the live pipeline.
+      <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-zinc-300 px-4 text-center text-xs text-zinc-500 dark:border-zinc-700">
+        <div className="space-y-1">
+          <p className="font-medium text-zinc-600 dark:text-zinc-400">
+            No ABCS decision at this point.
+          </p>
+          <p className="text-[10px] text-zinc-400">
+            The selected time corresponds to an RR/MLFQ dispatch that ABCS did not
+            share, or ABCS has not dispatched yet. Step to an ABCS dispatch to see
+            the pipeline.
+          </p>
+        </div>
       </div>
     );
   }
